@@ -424,7 +424,7 @@ async function loadFluxo() {
   const vendas = await resVendas.json();
 
   const cards = [
-    { label: 'Custo (compras)', value: fmt(fluxo.custo_total), color: 'muted' },
+    { label: 'Custo (compras)', value: '- ' + fmt(fluxo.custo_total), color: 'red' },
     { label: 'Vendido', value: fmt(fluxo.vendido_total), color: 'amber' },
   ];
 
@@ -452,8 +452,8 @@ async function loadFluxo() {
     data: {
       labels: ['Custo', 'Vendido', 'Recebido', 'Resultado', 'A receber'],
       datasets: [{
-        data: [fluxo.custo_total, fluxo.vendido_total, fluxo.recebido_total, fluxo.resultado_periodo, fluxo.a_receber],
-        backgroundColor: ['#94a3b8','#f59e0b','#10b981','#3b82f6','#f59e0b'],
+        data: [-fluxo.custo_total, fluxo.vendido_total, fluxo.recebido_total, fluxo.resultado_periodo, fluxo.a_receber],
+        backgroundColor: ['#ef4444','#f59e0b','#10b981','#3b82f6','#f59e0b'],
         borderRadius: 6,
       }]
     },
