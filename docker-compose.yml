@@ -1,0 +1,39 @@
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: choperia-waha
+    restart: always
+    ports:
+      - "3002:3000"
+    volumes:
+      - waha_sessions:/app/.sessions
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_DASHBOARD_ENABLED: "true"
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_API_KEY}
+      WHATSAPP_HOOK_MEDIA_INLINE: "true"
+      WHATSAPP_HOOK_URL: "http://choperia-app:8000/webhook"
+      WHATSAPP_HOOK_EVENTS: "message.any"
+    networks:
+      - choperia-net
+
+  app:
+    build: .
+    container_name: choperia-app
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - waha
+    networks:
+      - choperia-net
+
+networks:
+  choperia-net:
+    driver: bridge
+
+volumes:
+  waha_sessions:
