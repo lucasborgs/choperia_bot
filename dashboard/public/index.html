@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Choperia Bot — Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --border: #334155;
+    --accent: #f59e0b;
+    --accent2: #10b981;
+    --danger: #ef4444;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --radius: 10px;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 14px; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header h1 { font-size: 18px; font-weight: 700; color: var(--accent); }
+  header span { color: var(--muted); font-size: 13px; }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 16px 20px 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 8px 18px;
+    border-radius: 6px 6px 0 0;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: color .15s;
+  }
+  .tab.active {
+    background: var(--surface);
+    border-color: var(--border);
+    border-bottom-color: var(--surface);
+    color: var(--accent);
+  }
+  .tab:hover:not(.active) { color: var(--text); }
+
+  .panel { display: none; padding: 20px; }
+  .panel.active { display: block; }
+
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+    margin-bottom: 20px;
+  }
+  .filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .filters input[type=date] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .btn {
+    padding: 7px 16px;
+    border-radius: 6px;
+    border: none;
+    background: var(--accent);
+    color: #000;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 13px;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  .card .value { font-size: 22px; font-weight: 700; }
+  .card .value.green { color: var(--accent2); }
+  .card .value.amber { color: var(--accent); }
+  .card .value.red   { color: var(--danger); }
+
+  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    background: var(--surface);
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  tbody tr { border-top: 1px solid var(--border); }
+  tbody tr:hover { background: rgba(255,255,255,.03); }
+  tbody td { padding: 9px 12px; color: var(--text); white-space: nowrap; }
+
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+
+  .chart-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 20px;
+    max-height: 320px;
+  }
+
+  .loading { color: var(--muted); padding: 20px 0; }
+
+  @media (max-width: 600px) {
+    .cards { grid-template-columns: 1fr 1fr; }
+    header h1 { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Choperia Bot</h1>
+  <span>Dashboard</span>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" onclick="switchTab('entradas')">Entradas</button>
+  <button class="tab" onclick="switchTab('saidas')">Saidas</button>
+  <button class="tab" onclick="switchTab('fluxo')">Fluxo de Caixa</button>
+</nav>
+
+<!-- ENTRADAS -->
+<div id="tab-entradas" class="panel active">
+  <div class="filters">
+    <label>De <input type="date" id="e-de"></label>
+    <label>Ate <input type="date" id="e-ate"></label>
+    <button class="btn" onclick="loadEntradas()">Buscar</button>
+  </div>
+  <div class="cards" id="e-cards"></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Data</th><th>Produto</th><th>Qtd</th><th>Unidade</th>
+        <th>Litros</th><th>V. Unit.</th><th>Total</th><th>Fornecedor</th>
+      </tr></thead>
+      <tbody id="e-body"><tr><td colspan="8" class="empty">Selecione o periodo e clique em Buscar.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- SAIDAS -->
+<div id="tab-saidas" class="panel">
+  <div class="filters">
+    <label>De <input type="date" id="s-de"></label>
+    <label>Ate <input type="date" id="s-ate"></label>
+    <button class="btn" onclick="loadSaidas()">Buscar</button>
+  </div>
+  <div class="cards" id="s-cards"></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Data</th><th>Produto</th><th>Qtd</th><th>V. Unit.</th><th>Total</th><th>Cliente</th>
+      </tr></thead>
+      <tbody id="s-body"><tr><td colspan="6" class="empty">Selecione o periodo e clique em Buscar.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- FLUXO DE CAIXA -->
+<div id="tab-fluxo" class="panel">
+  <div class="filters">
+    <label>De <input type="date" id="f-de"></label>
+    <label>Ate <input type="date" id="f-ate"></label>
+    <button class="btn" onclick="loadFluxo()">Buscar</button>
+  </div>
+  <div class="cards" id="f-cards"></div>
+  <div class="chart-wrap"><canvas id="f-chart"></canvas></div>
+  <h3 style="margin-bottom:12px;font-size:14px;color:var(--muted)">ESTOQUE POR PRODUTO</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Produto</th><th>Qtd comprada</th><th>Custo total</th>
+        <th>Qtd vendida</th><th>Receita</th><th>Lucro bruto</th>
+        <th>Doses compradas</th><th>Doses vendidas</th><th>Perda %</th>
+      </tr></thead>
+      <tbody id="est-body"><tr><td colspan="9" class="empty">Clique em Buscar para carregar.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const fmt = (v) => 'R$ ' + Number(v).toFixed(2).replace('.', ',');
+const fmtDate = (s) => {
+  if (!s) return '-';
+  const d = new Date(s);
+  return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+};
+const today = () => new Date().toISOString().slice(0, 10);
+const firstOfMonth = () => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10); };
+
+['e','s','f'].forEach(p => {
+  document.getElementById(p+'-de').value = firstOfMonth();
+  document.getElementById(p+'-ate').value = today();
+});
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    const names = ['entradas','saidas','fluxo'];
+    t.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+function buildCards(container, items) {
+  container.innerHTML = items.map(i =>
+    `<div class="card"><div class="label">${i.label}</div><div class="value ${i.color||''}">${i.value}</div></div>`
+  ).join('');
+}
+
+async function loadEntradas() {
+  const de = document.getElementById('e-de').value;
+  const ate = document.getElementById('e-ate').value;
+  const body = document.getElementById('e-body');
+  body.innerHTML = '<tr><td colspan="8" class="empty loading">Carregando...</td></tr>';
+
+  const res = await fetch(`/api/entradas?de=${de}&ate=${ate}`);
+  const data = await res.json();
+
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">Nenhum resultado.</td></tr>';
+    buildCards(document.getElementById('e-cards'), []);
+    return;
+  }
+
+  const total = data.reduce((s, r) => s + r.valor_total, 0);
+  buildCards(document.getElementById('e-cards'), [
+    { label: 'Total de registros', value: data.length },
+    { label: 'Total gasto', value: fmt(total), color: 'red' },
+  ]);
+
+  body.innerHTML = data.map(r => `<tr>
+    <td>${fmtDate(r.criado_em)}</td>
+    <td>${r.produto_nome}</td>
+    <td>${Number(r.quantidade).toLocaleString('pt-BR')}</td>
+    <td>${r.unidade}</td>
+    <td>${r.litros != null ? r.litros + ' L' : '-'}</td>
+    <td>${fmt(r.valor_unitario)}</td>
+    <td>${fmt(r.valor_total)}</td>
+    <td>${r.fornecedor || '-'}</td>
+  </tr>`).join('');
+}
+
+async function loadSaidas() {
+  const de = document.getElementById('s-de').value;
+  const ate = document.getElementById('s-ate').value;
+  const body = document.getElementById('s-body');
+  body.innerHTML = '<tr><td colspan="6" class="empty loading">Carregando...</td></tr>';
+
+  const res = await fetch(`/api/saidas?de=${de}&ate=${ate}`);
+  const data = await res.json();
+
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">Nenhum resultado.</td></tr>';
+    buildCards(document.getElementById('s-cards'), []);
+    return;
+  }
+
+  const totalQtd = data.reduce((s, r) => s + r.quantidade, 0);
+  const totalVal = data.reduce((s, r) => s + r.valor_total, 0);
+  buildCards(document.getElementById('s-cards'), [
+    { label: 'Itens vendidos', value: totalQtd },
+    { label: 'Receita total', value: fmt(totalVal), color: 'green' },
+  ]);
+
+  body.innerHTML = data.map(r => `<tr>
+    <td>${fmtDate(r.criado_em)}</td>
+    <td>${r.produto_nome}</td>
+    <td>${r.quantidade}</td>
+    <td>${fmt(r.valor_unitario)}</td>
+    <td>${fmt(r.valor_total)}</td>
+    <td>${r.nome_cliente}</td>
+  </tr>`).join('');
+}
+
+let fluxoChart = null;
+
+async function loadFluxo() {
+  const de = document.getElementById('f-de').value;
+  const ate = document.getElementById('f-ate').value;
+
+  const [resFluxo, resEst] = await Promise.all([
+    fetch(`/api/fluxo?de=${de}&ate=${ate}`),
+    fetch('/api/estoque'),
+  ]);
+  const fluxo = await resFluxo.json();
+  const estoque = await resEst.json();
+
+  buildCards(document.getElementById('f-cards'), [
+    { label: 'Custo (compras)', value: fmt(fluxo.custo_total), color: 'red' },
+    { label: 'Vendido', value: fmt(fluxo.vendido_total), color: 'amber' },
+    { label: 'Recebido', value: fmt(fluxo.recebido_total), color: 'green' },
+    { label: 'Lucro bruto', value: fmt(fluxo.lucro_bruto), color: fluxo.lucro_bruto >= 0 ? 'green' : 'red' },
+    { label: 'A receber', value: fmt(fluxo.a_receber), color: 'amber' },
+  ]);
+
+  const ctx = document.getElementById('f-chart');
+  if (fluxoChart) fluxoChart.destroy();
+  fluxoChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['Custo', 'Vendido', 'Recebido', 'Lucro bruto', 'A receber'],
+      datasets: [{
+        data: [fluxo.custo_total, fluxo.vendido_total, fluxo.recebido_total, fluxo.lucro_bruto, fluxo.a_receber],
+        backgroundColor: ['#ef4444','#f59e0b','#10b981','#3b82f6','#f59e0b'],
+        borderRadius: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#94a3b8', callback: v => 'R$' + v.toFixed(0) }, grid: { color: '#334155' } },
+      }
+    }
+  });
+
+  const estBody = document.getElementById('est-body');
+  if (!estoque.length) {
+    estBody.innerHTML = '<tr><td colspan="9" class="empty">Sem dados de estoque.</td></tr>';
+    return;
+  }
+  estBody.innerHTML = estoque.map(r => {
+    const lucro = r.receita_total - r.custo_total;
+    return `<tr>
+      <td>${r.produto}</td>
+      <td>${Number(r.qtd_comprada).toLocaleString('pt-BR')}</td>
+      <td>${fmt(r.custo_total)}</td>
+      <td>${Number(r.qtd_vendida).toLocaleString('pt-BR')}</td>
+      <td>${fmt(r.receita_total)}</td>
+      <td style="color:${lucro>=0?'var(--accent2)':'var(--danger)'}">${fmt(lucro)}</td>
+      <td>${r.doses_compradas != null ? r.doses_compradas : '-'}</td>
+      <td>${r.doses_vendidas != null ? r.doses_vendidas : '-'}</td>
+      <td>${r.perda_pct != null ? r.perda_pct + '%' : '-'}</td>
+    </tr>`;
+  }).join('');
+}
+</script>
+</body>
+</html>
