@@ -13,24 +13,20 @@ class handler(BaseHTTPRequestHandler):
         de = qs.get("de", [today.replace(day=1).isoformat()])[0]
         ate = qs.get("ate", [today.isoformat()])[0]
         produto = qs.get("produto", [None])[0]
-        unidade = qs.get("unidade", [None])[0]
 
         sql = """
-            SELECT produto_nome, unidade, quantidade, litros,
-                   valor_unitario, valor_total, fornecedor, criado_em
-            FROM entradas
-            WHERE criado_em::date BETWEEN %s AND %s
+            SELECT i.criado_em::date AS dia, SUM(i.valor_total) AS total
+            FROM itens_comanda i
+            JOIN comandas c ON c.id = i.comanda_id
+            WHERE i.criado_em::date BETWEEN %s AND %s
         """
         params = [de, ate]
 
         if produto:
-            sql += " AND produto_nome = %s"
+            sql += " AND i.produto_nome = %s"
             params.append(produto)
-        if unidade:
-            sql += " AND unidade = %s"
-            params.append(unidade)
 
-        sql += " ORDER BY criado_em DESC"
+        sql += " GROUP BY dia ORDER BY dia"
 
         rows = query(sql, params)
 

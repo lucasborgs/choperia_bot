@@ -71,7 +71,8 @@
     margin-bottom: 20px;
   }
   .filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-  .filters input[type=date] {
+  .filters input[type=date],
+  .filters select {
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
@@ -79,6 +80,7 @@
     padding: 6px 10px;
     font-size: 13px;
   }
+  .filters select { min-width: 120px; }
   .btn {
     padding: 7px 16px;
     border-radius: 6px;
@@ -110,6 +112,8 @@
   .card .value.green { color: var(--accent2); }
   .card .value.amber { color: var(--accent); }
   .card .value.red   { color: var(--danger); }
+  .card .value.muted { color: var(--muted); }
+  .card .note { font-size: 10px; color: var(--muted); margin-top: 4px; }
 
   .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
   table { width: 100%; border-collapse: collapse; }
@@ -138,6 +142,8 @@
     max-height: 320px;
   }
 
+  .section-title { margin: 20px 0 12px; font-size: 14px; color: var(--muted); }
+
   .loading { color: var(--muted); padding: 20px 0; }
 
   @media (max-width: 600px) {
@@ -164,6 +170,8 @@
   <div class="filters">
     <label>De <input type="date" id="e-de"></label>
     <label>Ate <input type="date" id="e-ate"></label>
+    <label>Produto <select id="e-produto"><option value="">Todos</option></select></label>
+    <label>Unidade <select id="e-unidade"><option value="">Todas</option></select></label>
     <button class="btn" onclick="loadEntradas()">Buscar</button>
   </div>
   <div class="cards" id="e-cards"></div>
@@ -183,9 +191,11 @@
   <div class="filters">
     <label>De <input type="date" id="s-de"></label>
     <label>Ate <input type="date" id="s-ate"></label>
+    <label>Produto <select id="s-produto"><option value="">Todos</option></select></label>
     <button class="btn" onclick="loadSaidas()">Buscar</button>
   </div>
   <div class="cards" id="s-cards"></div>
+  <div class="chart-wrap" id="s-chart-wrap" style="display:none"><canvas id="s-chart"></canvas></div>
   <div class="table-wrap">
     <table>
       <thead><tr>
@@ -201,19 +211,22 @@
   <div class="filters">
     <label>De <input type="date" id="f-de"></label>
     <label>Ate <input type="date" id="f-ate"></label>
+    <label>Produto <select id="f-produto"><option value="">Todos</option></select></label>
     <button class="btn" onclick="loadFluxo()">Buscar</button>
   </div>
   <div class="cards" id="f-cards"></div>
   <div class="chart-wrap"><canvas id="f-chart"></canvas></div>
-  <h3 style="margin-bottom:12px;font-size:14px;color:var(--muted)">ESTOQUE POR PRODUTO</h3>
+  <h3 class="section-title">VENDAS DIARIAS</h3>
+  <div class="chart-wrap"><canvas id="f-line-chart"></canvas></div>
+  <h3 class="section-title">ESTOQUE POR PRODUTO</h3>
   <div class="table-wrap">
     <table>
       <thead><tr>
         <th>Produto</th><th>Qtd comprada</th><th>Custo total</th>
-        <th>Qtd vendida</th><th>Receita</th><th>Lucro bruto</th>
-        <th>Doses compradas</th><th>Doses vendidas</th><th>Perda %</th>
+        <th>Qtd vendida</th><th>Receita</th><th>Margem</th>
+        <th>Unid. compradas</th><th>Unid. vendidas</th><th>Perda %</th><th>Margem %</th>
       </tr></thead>
-      <tbody id="est-body"><tr><td colspan="9" class="empty">Clique em Buscar para carregar.</td></tr></tbody>
+      <tbody id="est-body"><tr><td colspan="10" class="empty">Clique em Buscar para carregar.</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -233,6 +246,25 @@ const firstOfMonth = () => { const d = new Date(); d.setDate(1); return d.toISOS
   document.getElementById(p+'-ate').value = today();
 });
 
+// Load filter options
+fetch('/api/produtos').then(r => r.json()).then(data => {
+  const prodSelects = ['e-produto', 's-produto', 'f-produto'];
+  prodSelects.forEach(id => {
+    const sel = document.getElementById(id);
+    data.produtos.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  });
+  const uSel = document.getElementById('e-unidade');
+  data.unidades.forEach(u => {
+    const opt = document.createElement('option');
+    opt.value = u; opt.textContent = u;
+    uSel.appendChild(opt);
+  });
+}).catch(() => {});
+
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => {
     const names = ['entradas','saidas','fluxo'];
@@ -243,18 +275,25 @@ function switchTab(name) {
 }
 
 function buildCards(container, items) {
-  container.innerHTML = items.map(i =>
-    `<div class="card"><div class="label">${i.label}</div><div class="value ${i.color||''}">${i.value}</div></div>`
-  ).join('');
+  container.innerHTML = items.map(i => {
+    const note = i.note ? `<div class="note">${i.note}</div>` : '';
+    return `<div class="card"><div class="label">${i.label}</div><div class="value ${i.color||''}">${i.value}</div>${note}</div>`;
+  }).join('');
 }
 
 async function loadEntradas() {
   const de = document.getElementById('e-de').value;
   const ate = document.getElementById('e-ate').value;
+  const produto = document.getElementById('e-produto').value;
+  const unidade = document.getElementById('e-unidade').value;
   const body = document.getElementById('e-body');
   body.innerHTML = '<tr><td colspan="8" class="empty loading">Carregando...</td></tr>';
 
-  const res = await fetch(`/api/entradas?de=${de}&ate=${ate}`);
+  let url = `/api/entradas?de=${de}&ate=${ate}`;
+  if (produto) url += `&produto=${encodeURIComponent(produto)}`;
+  if (unidade) url += `&unidade=${encodeURIComponent(unidade)}`;
+
+  const res = await fetch(url);
   const data = await res.json();
 
   if (!data.length) {
@@ -266,7 +305,7 @@ async function loadEntradas() {
   const total = data.reduce((s, r) => s + r.valor_total, 0);
   buildCards(document.getElementById('e-cards'), [
     { label: 'Total de registros', value: data.length },
-    { label: 'Total gasto', value: fmt(total), color: 'red' },
+    { label: 'Total gasto', value: fmt(total), color: 'muted' },
   ]);
 
   body.innerHTML = data.map(r => `<tr>
@@ -281,29 +320,41 @@ async function loadEntradas() {
   </tr>`).join('');
 }
 
+let saidasChart = null;
+
 async function loadSaidas() {
   const de = document.getElementById('s-de').value;
   const ate = document.getElementById('s-ate').value;
+  const produto = document.getElementById('s-produto').value;
   const body = document.getElementById('s-body');
   body.innerHTML = '<tr><td colspan="6" class="empty loading">Carregando...</td></tr>';
 
-  const res = await fetch(`/api/saidas?de=${de}&ate=${ate}`);
-  const data = await res.json();
+  let url = `/api/saidas?de=${de}&ate=${ate}`;
+  if (produto) url += `&produto=${encodeURIComponent(produto)}`;
 
-  if (!data.length) {
+  const res = await fetch(url);
+  const data = await res.json();
+  const rows = data.rows;
+  const resumo = data.resumo;
+  const ranking = data.ranking || [];
+
+  if (!rows.length) {
     body.innerHTML = '<tr><td colspan="6" class="empty">Nenhum resultado.</td></tr>';
     buildCards(document.getElementById('s-cards'), []);
+    document.getElementById('s-chart-wrap').style.display = 'none';
     return;
   }
 
-  const totalQtd = data.reduce((s, r) => s + r.quantidade, 0);
-  const totalVal = data.reduce((s, r) => s + r.valor_total, 0);
+  const totalQtd = rows.reduce((s, r) => s + r.quantidade, 0);
+  const totalVal = rows.reduce((s, r) => s + r.valor_total, 0);
   buildCards(document.getElementById('s-cards'), [
     { label: 'Itens vendidos', value: totalQtd },
     { label: 'Receita total', value: fmt(totalVal), color: 'green' },
+    { label: 'Comandas', value: resumo.total_comandas },
+    { label: 'Ticket medio', value: fmt(resumo.ticket_medio), color: 'amber' },
   ]);
 
-  body.innerHTML = data.map(r => `<tr>
+  body.innerHTML = rows.map(r => `<tr>
     <td>${fmtDate(r.criado_em)}</td>
     <td>${r.produto_nome}</td>
     <td>${r.quantidade}</td>
@@ -311,38 +362,98 @@ async function loadSaidas() {
     <td>${fmt(r.valor_total)}</td>
     <td>${r.nome_cliente}</td>
   </tr>`).join('');
+
+  // Ranking chart
+  if (ranking.length) {
+    document.getElementById('s-chart-wrap').style.display = 'block';
+    const ctx = document.getElementById('s-chart');
+    if (saidasChart) saidasChart.destroy();
+    saidasChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ranking.map(r => r.produto_nome),
+        datasets: [{
+          data: ranking.map(r => r.total),
+          backgroundColor: ['#f59e0b','#10b981','#3b82f6','#8b5cf6','#ec4899'],
+          borderRadius: 6,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: 'Top 5 Produtos', color: '#94a3b8', font: { size: 13 } }
+        },
+        scales: {
+          x: { ticks: { color: '#94a3b8', callback: v => 'R$' + v.toFixed(0) }, grid: { color: '#334155' } },
+          y: { ticks: { color: '#94a3b8' }, grid: { display: false } },
+        }
+      }
+    });
+  } else {
+    document.getElementById('s-chart-wrap').style.display = 'none';
+  }
 }
 
 let fluxoChart = null;
+let lineChart = null;
 
 async function loadFluxo() {
   const de = document.getElementById('f-de').value;
   const ate = document.getElementById('f-ate').value;
+  const produto = document.getElementById('f-produto').value;
 
-  const [resFluxo, resEst] = await Promise.all([
-    fetch(`/api/fluxo?de=${de}&ate=${ate}`),
-    fetch('/api/estoque'),
+  let fluxoUrl = `/api/fluxo?de=${de}&ate=${ate}`;
+  let estoqueUrl = `/api/estoque`;
+  let vendasUrl = `/api/vendas_diarias?de=${de}&ate=${ate}`;
+  if (produto) {
+    fluxoUrl += `&produto=${encodeURIComponent(produto)}`;
+    estoqueUrl += `?produto=${encodeURIComponent(produto)}`;
+    vendasUrl += `&produto=${encodeURIComponent(produto)}`;
+  }
+
+  const [resFluxo, resEst, resVendas] = await Promise.all([
+    fetch(fluxoUrl),
+    fetch(estoqueUrl),
+    fetch(vendasUrl),
   ]);
   const fluxo = await resFluxo.json();
   const estoque = await resEst.json();
+  const vendas = await resVendas.json();
 
-  buildCards(document.getElementById('f-cards'), [
-    { label: 'Custo (compras)', value: fmt(fluxo.custo_total), color: 'red' },
+  const cards = [
+    { label: 'Custo (compras)', value: fmt(fluxo.custo_total), color: 'muted' },
     { label: 'Vendido', value: fmt(fluxo.vendido_total), color: 'amber' },
-    { label: 'Recebido', value: fmt(fluxo.recebido_total), color: 'green' },
-    { label: 'Lucro bruto', value: fmt(fluxo.lucro_bruto), color: fluxo.lucro_bruto >= 0 ? 'green' : 'red' },
-    { label: 'A receber', value: fmt(fluxo.a_receber), color: 'amber' },
-  ]);
+  ];
 
+  if (fluxo.filtro_produto) {
+    cards.push({ label: 'Recebido', value: fmt(fluxo.recebido_total), color: 'green', note: 'Total, sem filtro de produto' });
+  } else {
+    cards.push({ label: 'Recebido', value: fmt(fluxo.recebido_total), color: 'green' });
+  }
+
+  cards.push({ label: 'Resultado do periodo', value: fmt(fluxo.resultado_periodo), color: fluxo.resultado_periodo >= 0 ? 'green' : 'red' });
+
+  if (fluxo.filtro_produto) {
+    cards.push({ label: 'A receber', value: fmt(fluxo.a_receber), color: 'amber', note: 'Total, sem filtro de produto' });
+  } else {
+    cards.push({ label: 'A receber', value: fmt(fluxo.a_receber), color: 'amber' });
+  }
+
+  buildCards(document.getElementById('f-cards'), cards);
+
+  // Bar chart
   const ctx = document.getElementById('f-chart');
   if (fluxoChart) fluxoChart.destroy();
   fluxoChart = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: ['Custo', 'Vendido', 'Recebido', 'Lucro bruto', 'A receber'],
+      labels: ['Custo', 'Vendido', 'Recebido', 'Resultado', 'A receber'],
       datasets: [{
-        data: [fluxo.custo_total, fluxo.vendido_total, fluxo.recebido_total, fluxo.lucro_bruto, fluxo.a_receber],
-        backgroundColor: ['#ef4444','#f59e0b','#10b981','#3b82f6','#f59e0b'],
+        data: [fluxo.custo_total, fluxo.vendido_total, fluxo.recebido_total, fluxo.resultado_periodo, fluxo.a_receber],
+        backgroundColor: ['#94a3b8','#f59e0b','#10b981','#3b82f6','#f59e0b'],
         borderRadius: 6,
       }]
     },
@@ -357,13 +468,53 @@ async function loadFluxo() {
     }
   });
 
+  // Line chart — vendas diarias
+  const lineCtx = document.getElementById('f-line-chart');
+  if (lineChart) lineChart.destroy();
+  if (vendas.length) {
+    lineChart = new Chart(lineCtx, {
+      type: 'line',
+      data: {
+        labels: vendas.map(r => {
+          const d = new Date(r.dia + 'T12:00:00');
+          return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+        }),
+        datasets: [{
+          label: 'Vendas',
+          data: vendas.map(r => r.total),
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16,185,129,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#94a3b8', callback: v => 'R$' + v.toFixed(0) }, grid: { color: '#334155' } },
+        }
+      }
+    });
+  }
+
+  // Estoque table
   const estBody = document.getElementById('est-body');
   if (!estoque.length) {
-    estBody.innerHTML = '<tr><td colspan="9" class="empty">Sem dados de estoque.</td></tr>';
+    estBody.innerHTML = '<tr><td colspan="10" class="empty">Sem dados de estoque.</td></tr>';
     return;
   }
   estBody.innerHTML = estoque.map(r => {
     const lucro = r.receita_total - r.custo_total;
+    let margemColor = 'var(--muted)';
+    if (r.margem_pct != null) {
+      if (r.margem_pct >= 30) margemColor = 'var(--accent2)';
+      else if (r.margem_pct >= 15) margemColor = 'var(--accent)';
+      else margemColor = 'var(--danger)';
+    }
     return `<tr>
       <td>${r.produto}</td>
       <td>${Number(r.qtd_comprada).toLocaleString('pt-BR')}</td>
@@ -371,9 +522,10 @@ async function loadFluxo() {
       <td>${Number(r.qtd_vendida).toLocaleString('pt-BR')}</td>
       <td>${fmt(r.receita_total)}</td>
       <td style="color:${lucro>=0?'var(--accent2)':'var(--danger)'}">${fmt(lucro)}</td>
-      <td>${r.doses_compradas != null ? r.doses_compradas : '-'}</td>
-      <td>${r.doses_vendidas != null ? r.doses_vendidas : '-'}</td>
+      <td>${r.unid_compradas != null ? r.unid_compradas : '-'}</td>
+      <td>${r.unid_vendidas != null ? r.unid_vendidas : '-'}</td>
       <td>${r.perda_pct != null ? r.perda_pct + '%' : '-'}</td>
+      <td style="color:${margemColor}">${r.margem_pct != null ? r.margem_pct + '%' : '-'}</td>
     </tr>`;
   }).join('');
 }
