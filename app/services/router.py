@@ -75,6 +75,7 @@ async def dispatch(action: dict) -> str:
     try:
         return await handler(params)
     except Exception as exc:
+        _pagamento_pendente = None  # limpa estado pendente em caso de erro
         logger.exception("Erro no handler '%s': %s", intent, exc)
         raise
 
