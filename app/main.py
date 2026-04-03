@@ -1,7 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_BRT = ZoneInfo("America/Sao_Paulo")
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -61,7 +64,7 @@ async def dashboard():
 
 @app.get("/api/entradas")
 async def api_entradas(de: str | None = None, ate: str | None = None):
-    today = date.today()
+    today = datetime.now(_BRT).date()
     d_de = date.fromisoformat(de) if de else today.replace(day=1)
     d_ate = date.fromisoformat(ate) if ate else today
     rows = await buscar_entradas_dashboard(d_de, d_ate)
@@ -74,7 +77,7 @@ async def api_entradas(de: str | None = None, ate: str | None = None):
 
 @app.get("/api/saidas")
 async def api_saidas(de: str | None = None, ate: str | None = None):
-    today = date.today()
+    today = datetime.now(_BRT).date()
     d_de = date.fromisoformat(de) if de else today.replace(day=1)
     d_ate = date.fromisoformat(ate) if ate else today
     rows = await buscar_saidas_dashboard(d_de, d_ate)
@@ -93,7 +96,7 @@ async def api_estoque():
 
 @app.get("/api/fluxo")
 async def api_fluxo(de: str | None = None, ate: str | None = None):
-    today = date.today()
+    today = datetime.now(_BRT).date()
     d_de = date.fromisoformat(de) if de else today.replace(day=1)
     d_ate = date.fromisoformat(ate) if ate else today
     data = await buscar_fluxo_caixa(d_de, d_ate)

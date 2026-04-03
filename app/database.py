@@ -1,12 +1,20 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import json
 
 import asyncpg
 
 from app.config import settings
+
+_BRT = ZoneInfo("America/Sao_Paulo")
+
+
+def _hoje() -> date:
+    """Retorna a data de hoje no fuso horário do Brasil."""
+    return datetime.now(_BRT).date()
 
 _pool: asyncpg.Pool | None = None
 
@@ -45,18 +53,18 @@ def get_pool() -> asyncpg.Pool:
 async def limpar_e_inserir_cardapio(
     itens: list[dict],  # [{"produto": str, "preco": float}]
 ) -> list[asyncpg.Record]:
-    hoje = date.today()
+    """Adiciona/atualiza itens no cardápio do dia (não remove os existentes)."""
+    hoje = _hoje()
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "DELETE FROM produtos_dia WHERE data_venda = $1", hoje
-            )
             rows = await conn.fetch(
                 """
                 INSERT INTO produtos_dia (nome, preco, data_venda)
                 SELECT item->>'produto', (item->>'preco')::DECIMAL, $2
                 FROM jsonb_array_elements($1::jsonb) AS item
+                ON CONFLICT (nome, data_venda)
+                DO UPDATE SET preco = EXCLUDED.preco
                 RETURNING nome, preco
                 """,
                 json.dumps([
@@ -73,7 +81,7 @@ async def buscar_cardapio_hoje() -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(
             "SELECT nome, preco FROM produtos_dia WHERE data_venda = $1 ORDER BY nome",
-            date.today(),
+            _hoje(),
         )
 
 
@@ -82,10 +90,22 @@ async def buscar_preco_produto(nome: str) -> Decimal | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT preco FROM produtos_dia WHERE data_venda = $1 AND lower(nome) = lower($2)",
-            date.today(),
+            _hoje(),
             nome,
         )
     return row["preco"] if row else None
+
+
+async def remover_produto_cardapio(nome: str) -> bool:
+    """Remove um produto do cardápio de hoje. Retorna True se encontrou e removeu."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM produtos_dia WHERE data_venda = $1 AND lower(nome) = lower($2)",
+            _hoje(),
+            nome,
+        )
+    return result != "DELETE 0"
 
 
 # ------------------------------------------------------------------
@@ -125,9 +145,14 @@ async def buscar_ou_criar_comanda(nome_cliente: str) -> UUID:
             "SELECT id FROM comandas WHERE status = 'aberta' AND lower(nome_cliente) = lower($1)",
             nome_cliente,
         )
-    if row:
-        return row["id"]
-    return await criar_comanda(nome_cliente)
+        if row:
+            return row["id"]
+        # Cria nova comanda (funciona mesmo se já existe uma 'paga' com o mesmo nome)
+        new_row = await conn.fetchrow(
+            "INSERT INTO comandas (nome_cliente) VALUES ($1) RETURNING id",
+            nome_cliente,
+        )
+        return new_row["id"]
 
 
 async def renomear_cliente(comanda_id: UUID, novo_nome: str) -> None:
@@ -261,10 +286,18 @@ async def registrar_pagamento_e_fechar(comanda_id: UUID, valor: Decimal) -> Deci
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(i.valor_total), 0) - COALESCE(SUM(p.valor), 0) AS saldo
+                    COALESCE(i.total, 0) - COALESCE(p.total, 0) AS saldo
                 FROM comandas c
-                LEFT JOIN itens_comanda i ON i.comanda_id = c.id
-                LEFT JOIN pagamentos p ON p.comanda_id = c.id
+                LEFT JOIN (
+                    SELECT comanda_id, SUM(valor_total) AS total
+                    FROM itens_comanda WHERE comanda_id = $1
+                    GROUP BY comanda_id
+                ) i ON i.comanda_id = c.id
+                LEFT JOIN (
+                    SELECT comanda_id, SUM(valor) AS total
+                    FROM pagamentos WHERE comanda_id = $1
+                    GROUP BY comanda_id
+                ) p ON p.comanda_id = c.id
                 WHERE c.id = $1
                 """,
                 comanda_id,
@@ -332,6 +365,36 @@ async def inserir_entradas(
                 )
                 rows.append(dict(row))
     return rows
+
+
+async def remover_ultima_entrada(produto: str | None = None) -> dict | None:
+    """Remove a entrada mais recente (opcionalmente filtrada por produto). Retorna a entrada removida."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        if produto:
+            row = await conn.fetchrow(
+                """
+                DELETE FROM entradas
+                WHERE id = (
+                    SELECT id FROM entradas
+                    WHERE lower(produto_nome) = lower($1)
+                    ORDER BY criado_em DESC LIMIT 1
+                )
+                RETURNING produto_nome, unidade, quantidade, litros, valor_unitario, valor_total, fornecedor
+                """,
+                produto,
+            )
+        else:
+            row = await conn.fetchrow(
+                """
+                DELETE FROM entradas
+                WHERE id = (
+                    SELECT id FROM entradas ORDER BY criado_em DESC LIMIT 1
+                )
+                RETURNING produto_nome, unidade, quantidade, litros, valor_unitario, valor_total, fornecedor
+                """,
+            )
+    return dict(row) if row else None
 
 
 # ------------------------------------------------------------------
@@ -489,7 +552,7 @@ async def buscar_fluxo_caixa(de: date, ate: date) -> dict:
 # ------------------------------------------------------------------
 
 async def relatorio_dia() -> dict:
-    hoje = date.today()
+    hoje = _hoje()
     pool = get_pool()
     async with pool.acquire() as conn:
         # Total por produto

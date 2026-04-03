@@ -31,6 +31,7 @@ async def dispatch(action: dict) -> str:
 
     handlers = {
         "definir_cardapio": _definir_cardapio,
+        "consultar_cardapio": _consultar_cardapio,
         "adicionar_itens": _adicionar_itens,
         "remover_item": _remover_item,
         "consultar_comanda": _consultar_comanda,
@@ -39,6 +40,8 @@ async def dispatch(action: dict) -> str:
         "relatorio_dia": _relatorio_dia,
         "renomear_cliente": _renomear_cliente,
         "registrar_entrada": _registrar_entrada,
+        "remover_cardapio": _remover_cardapio,
+        "remover_entrada": _remover_entrada,
         "configurar_produto": _configurar_produto,
         "desconhecido": _desconhecido,
     }
@@ -62,7 +65,25 @@ async def _definir_cardapio(params: dict) -> str:
 
     rows = await db.limpar_e_inserir_cardapio(itens)
     linhas = "\n".join(f"• {r['nome']} — R$ {r['preco']:.2f}" for r in rows)
+
+    # Mostra cardápio completo do dia
+    todos = await db.buscar_cardapio_hoje()
+    if len(todos) > len(rows):
+        linhas_total = "\n".join(f"• {r['nome']} — R$ {r['preco']:.2f}" for r in todos)
+        return (
+            f"✅ *Cardápio atualizado!*\n"
+            f"Adicionado/alterado: {len(rows)} item(ns)\n\n"
+            f"📋 *Cardápio completo ({len(todos)} itens):*\n{linhas_total}"
+        )
     return f"✅ *Cardápio do dia atualizado* ({len(rows)} itens):\n{linhas}"
+
+
+async def _consultar_cardapio(params: dict) -> str:
+    cardapio = await db.buscar_cardapio_hoje()
+    if not cardapio:
+        return "ℹ️ Nenhum cardápio definido para hoje."
+    linhas = "\n".join(f"• {r['nome']} — R$ {r['preco']:.2f}" for r in cardapio)
+    return f"📋 *Cardápio de hoje ({len(cardapio)} itens):*\n{linhas}"
 
 
 async def _adicionar_itens(params: dict) -> str:
@@ -311,6 +332,30 @@ async def _configurar_produto(params: dict) -> str:
         f"• Barril de 30L → ~{doses_30} doses úteis\n"
         f"• Perda estimada: {perda_pct:.0f}% · Dose: {_ML_POR_DOSE}ml"
     )
+
+
+async def _remover_cardapio(params: dict) -> str:
+    produto = params.get("produto", "").strip()
+    if not produto:
+        return "❌ Informe o produto a remover do cardápio."
+
+    removido = await db.remover_produto_cardapio(produto)
+    if not removido:
+        return f"❌ *{produto}* não encontrado no cardápio de hoje."
+    return f"✅ *{produto}* removido do cardápio."
+
+
+async def _remover_entrada(params: dict) -> str:
+    produto = (params.get("produto") or "").strip() or None
+
+    removido = await db.remover_ultima_entrada(produto)
+    if not removido:
+        if produto:
+            return f"❌ Nenhuma entrada encontrada para *{produto}*."
+        return "❌ Nenhuma entrada registrada."
+
+    desc = f"{removido['quantidade']:g}x {removido['unidade']} de *{removido['produto_nome']}*"
+    return f"✅ Entrada removida: {desc} — R$ {removido['valor_total']:.2f}"
 
 
 async def _desconhecido(params: dict) -> str:

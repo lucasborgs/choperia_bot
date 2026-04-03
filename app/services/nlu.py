@@ -93,7 +93,25 @@ Intents disponíveis:
     - Dose padrão é sempre 400ml (copo de chopp)
     - Exemplo: "configura IPA com 8% de perda" / "perda do Pilsen é 12%"
 
-11. desconhecido
+11. consultar_cardapio
+    - Quando: o dono pergunta o que tem no cardápio hoje, quais produtos estão disponíveis
+    - Params: {}
+    - Exemplo: "Qual o cardápio de hoje?" / "O que tem hoje?" / "Quais cervejas temos?"
+    - IMPORTANTE: NÃO confundir com definir_cardapio. Se o dono está PERGUNTANDO (não informando preços), use consultar_cardapio.
+
+12. remover_cardapio
+    - Quando: o dono quer remover um produto do cardápio de hoje
+    - Params: {"produto": str}
+    - Exemplo: "Tira IPA do cardápio" / "Remove pilsen do cardápio de hoje"
+    - IMPORTANTE: NÃO confundir com remover_item. Se menciona "cardápio" = remover_cardapio. Se menciona um CLIENTE = remover_item.
+
+13. remover_entrada
+    - Quando: o dono quer apagar/cancelar uma entrada de compra registrada errado
+    - Params: {"produto": str | null}
+    - Se produto não mencionado, use null (remove a última entrada registrada)
+    - Exemplo: "Apaga a última entrada" / "Remove a entrada do gelo" / "Cancela a última compra"
+
+14. desconhecido
     - Quando nenhuma outra intent se aplica
     - Params: {"mensagem": str}
 
