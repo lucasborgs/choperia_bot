@@ -212,6 +212,8 @@ async def _consultar_comanda(params: dict) -> str:
 
 async def _listar_comandas(params: dict) -> str:
     comandas = await db.listar_comandas_abertas()
+    # Filtra comandas sem itens e sem saldo (vazias/zeradas)
+    comandas = [c for c in comandas if c["total_consumido"] > 0 or c["saldo_devedor"] > 0]
     if not comandas:
         return "ℹ️ Nenhuma comanda aberta no momento."
 
@@ -256,7 +258,8 @@ async def _pagar_conta(params: dict) -> str:
         valor = Decimal(str(parsed))
 
     if valor <= 0:
-        return f"ℹ️ Comanda de *{nome_real}* já está quitada."
+        await db.fechar_comanda(comanda_id)
+        return f"✅ Comanda de *{nome_real}* fechada (saldo zerado)."
 
     # Guarda pagamento pendente e pede confirmação
     _pagamento_pendente = {
