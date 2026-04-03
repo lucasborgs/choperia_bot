@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -13,8 +13,11 @@ _BRT = ZoneInfo("America/Sao_Paulo")
 
 
 def _hoje() -> date:
-    """Retorna a data de hoje no fuso horário do Brasil."""
-    return datetime.now(_BRT).date()
+    """Retorna o dia operacional (06:00–05:59). Antes das 6h conta como dia anterior."""
+    agora = datetime.now(_BRT)
+    if agora.hour < 6:
+        return (agora - timedelta(days=1)).date()
+    return agora.date()
 
 _pool: asyncpg.Pool | None = None
 
@@ -23,6 +26,11 @@ _pool: asyncpg.Pool | None = None
 # Ciclo de vida
 # ------------------------------------------------------------------
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Configura cada conexão do pool para usar fuso horário do Brasil."""
+    await conn.execute("SET timezone = 'America/Sao_Paulo'")
+
+
 async def init_db() -> None:
     global _pool
     _pool = await asyncpg.create_pool(
@@ -30,6 +38,7 @@ async def init_db() -> None:
         min_size=1,
         max_size=5,
         statement_cache_size=0,
+        init=_init_connection,
     )
 
 
@@ -63,8 +72,8 @@ async def limpar_e_inserir_cardapio(
                 INSERT INTO produtos_dia (nome, preco, data_venda)
                 SELECT item->>'produto', (item->>'preco')::DECIMAL, $2
                 FROM jsonb_array_elements($1::jsonb) AS item
-                ON CONFLICT (nome, data_venda)
-                DO UPDATE SET preco = EXCLUDED.preco
+                ON CONFLICT (lower(nome), data_venda)
+                DO UPDATE SET preco = EXCLUDED.preco, nome = EXCLUDED.nome
                 RETURNING nome, preco
                 """,
                 json.dumps([

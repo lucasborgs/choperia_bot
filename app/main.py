@@ -6,6 +6,15 @@ from zoneinfo import ZoneInfo
 
 _BRT = ZoneInfo("America/Sao_Paulo")
 
+
+def _hoje() -> date:
+    """Dia operacional (06:00–05:59). Antes das 6h conta como dia anterior."""
+    agora = datetime.now(_BRT)
+    if agora.hour < 6:
+        return (agora - timedelta(days=1)).date()
+    return agora.date()
+
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -64,7 +73,7 @@ async def dashboard():
 
 @app.get("/api/entradas")
 async def api_entradas(de: str | None = None, ate: str | None = None):
-    today = datetime.now(_BRT).date()
+    today = _hoje()
     d_de = date.fromisoformat(de) if de else today.replace(day=1)
     d_ate = date.fromisoformat(ate) if ate else today
     rows = await buscar_entradas_dashboard(d_de, d_ate)
@@ -77,7 +86,7 @@ async def api_entradas(de: str | None = None, ate: str | None = None):
 
 @app.get("/api/saidas")
 async def api_saidas(de: str | None = None, ate: str | None = None):
-    today = datetime.now(_BRT).date()
+    today = _hoje()
     d_de = date.fromisoformat(de) if de else today.replace(day=1)
     d_ate = date.fromisoformat(ate) if ate else today
     rows = await buscar_saidas_dashboard(d_de, d_ate)
@@ -96,7 +105,7 @@ async def api_estoque():
 
 @app.get("/api/fluxo")
 async def api_fluxo(de: str | None = None, ate: str | None = None):
-    today = datetime.now(_BRT).date()
+    today = _hoje()
     d_de = date.fromisoformat(de) if de else today.replace(day=1)
     d_ate = date.fromisoformat(ate) if ate else today
     data = await buscar_fluxo_caixa(d_de, d_ate)
