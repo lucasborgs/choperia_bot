@@ -116,9 +116,20 @@ async def api_fluxo(de: str | None = None, ate: str | None = None):
 async def webhook(request: Request):
     raw: dict[str, Any] = await request.json()
 
+    # DEBUG: loga evento e campos-chave para diagnosticar filtros
+    event = raw.get("event", "")
+    payload_debug = raw.get("payload", {})
+    logger.info(
+        "Webhook recebido: event=%s fromMe=%s source=%s from=%s type=%s",
+        event,
+        payload_debug.get("fromMe"),
+        payload_debug.get("source"),
+        payload_debug.get("from"),
+        payload_debug.get("type"),
+    )
+
     # WAHA envia evento no campo "event"
     # Aceita apenas "message" — "message.any" é redundante e causa duplicatas
-    event = raw.get("event", "")
     if event != "message":
         return {"status": "ignored"}
 
