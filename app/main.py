@@ -128,9 +128,8 @@ async def webhook(request: Request):
         payload_debug.get("type"),
     )
 
-    # WAHA envia evento no campo "event"
-    # Aceita apenas "message" — "message.any" é redundante e causa duplicatas
-    if event != "message":
+    # WAHA Core envia apenas "message.any"
+    if event not in ("message", "message.any"):
         return {"status": "ignored"}
 
     payload = raw.get("payload", {})
