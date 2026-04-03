@@ -117,8 +117,9 @@ async def webhook(request: Request):
     raw: dict[str, Any] = await request.json()
 
     # WAHA envia evento no campo "event"
+    # Aceita apenas "message" — "message.any" é redundante e causa duplicatas
     event = raw.get("event", "")
-    if event not in ("message", "message.any"):
+    if event != "message":
         return {"status": "ignored"}
 
     payload = raw.get("payload", {})
