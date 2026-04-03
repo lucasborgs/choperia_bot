@@ -187,7 +187,19 @@ async def _process_text(text: str, transcription_prefix: str = "") -> None:
 
 async def _process_audio(payload: dict) -> None:
     logger.info("Processando áudio...")
-    audio_bytes = await download_audio(payload)
-    text = await transcription.transcribe(audio_bytes)
+    try:
+        audio_bytes = await download_audio(payload)
+    except Exception as exc:
+        logger.exception("Falha ao baixar áudio: %s", exc)
+        await send_text("⚠️ Não consegui baixar o áudio. Tente enviar novamente ou digite o comando.")
+        return
+
+    try:
+        text = await transcription.transcribe(audio_bytes)
+    except Exception as exc:
+        logger.exception("Falha na transcrição: %s", exc)
+        await send_text("⚠️ Não consegui transcrever o áudio. Tente novamente ou digite o comando.")
+        return
+
     prefix = f"🎤 *Entendi:* _{text}_\n\n"
     await _process_text(text, transcription_prefix=prefix)

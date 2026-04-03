@@ -12,8 +12,11 @@ class Settings(BaseSettings):
     # Banco de dados
     DATABASE_URL: str
 
-    # Groq (transcrição de áudio e NLU)
+    # Groq (transcrição de áudio)
     GROQ_API_KEY: str
+
+    # OpenAI (NLU)
+    OPENAI_API_KEY: str
 
     @property
     def owner_jid(self) -> str:

@@ -1,5 +1,5 @@
 """
-NLU via Groq (LLaMA): recebe texto livre e retorna uma Action estruturada.
+NLU via OpenAI (GPT-4o mini): recebe texto livre e retorna uma Action estruturada.
 
 Intents suportadas:
   - definir_cardapio   params: itens=[{produto, preco}]
@@ -16,21 +16,21 @@ import json
 import logging
 import re
 
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "llama-3.3-70b-versatile"
+_MODEL = "gpt-4o-mini"
 
-_client: AsyncGroq | None = None
+_client: AsyncOpenAI | None = None
 
 
-def _get_client() -> AsyncGroq:
+def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = AsyncGroq(api_key=settings.GROQ_API_KEY, timeout=30.0)
+        _client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
     return _client
 
 _SYSTEM_PROMPT = """Você é o assistente de um bar/choperia chamado Choperia Bot.
