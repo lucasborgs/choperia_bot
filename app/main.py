@@ -125,11 +125,14 @@ async def webhook(request: Request):
     if not payload:
         return {"status": "ignored"}
 
-    # Só processa mensagens enviadas pelo dono a partir do celular físico.
-    # source="app"  → digitado/gravado no app do celular ✅
-    # source=null   → enviado pela API do bot (evita loop) ❌
-    # fromMe=False  → mensagem de outra pessoa ❌
+    # Só processa mensagens do autochat (conversa consigo mesmo).
+    # fromMe=True + source="app" → dono digitou/gravou no celular ✅
+    # chatId deve ser o autochat do dono (OWNER_PHONE@c.us) ✅
     if not payload.get("fromMe", False) or payload.get("source") != "app":
+        return {"status": "ignored"}
+
+    chat_id = payload.get("from", "")
+    if chat_id != f"{settings.OWNER_PHONE}@c.us":
         return {"status": "ignored"}
 
     # WAHA coloca o type em _data.type, não no topo do payload
