@@ -5,10 +5,18 @@ Retorna uma string formatada para ser enviada ao dono via WhatsApp.
 
 import logging
 from decimal import Decimal
+from uuid import UUID
 
 from app import database as db
 
 logger = logging.getLogger(__name__)
+
+# Pagamento pendente de confirmação (um por vez, dono opera sozinho)
+_pagamento_pendente: dict | None = None
+
+
+def has_pending_payment() -> bool:
+    return _pagamento_pendente is not None
 
 
 def _safe_int(value, default: int = 1) -> int:
@@ -26,8 +34,25 @@ def _safe_float(value, default: float | None = None) -> float | None:
 
 
 async def dispatch(action: dict) -> str:
+    global _pagamento_pendente
+
     intent = action.get("intent", "desconhecido")
     params = action.get("params", {})
+
+    # Verifica se há pagamento pendente de confirmação
+    if _pagamento_pendente is not None:
+        pendente = _pagamento_pendente
+        texto_original = params.get("mensagem", "").strip().lower() if intent == "desconhecido" else ""
+        # Aceita "sim", "s", "yes", "confirma" como confirmação
+        if intent == "desconhecido" and texto_original in ("sim", "s", "yes", "confirma", "confirmar"):
+            _pagamento_pendente = None
+            return await _executar_pagamento(pendente)
+        else:
+            # Qualquer outra mensagem cancela o pagamento pendente
+            _pagamento_pendente = None
+            if intent == "desconhecido" and texto_original in ("não", "nao", "no", "n", "cancela", "cancelar"):
+                return "❌ Pagamento cancelado."
+            # Não era sim/não — processa o novo comando normalmente
 
     handlers = {
         "definir_cardapio": _definir_cardapio,
@@ -197,6 +222,8 @@ async def _listar_comandas(params: dict) -> str:
 
 
 async def _pagar_conta(params: dict) -> str:
+    global _pagamento_pendente
+
     cliente = params.get("cliente", "").strip()
     valor_raw = params.get("valor")
 
@@ -230,13 +257,30 @@ async def _pagar_conta(params: dict) -> str:
     if valor <= 0:
         return f"ℹ️ Comanda de *{nome_real}* já está quitada."
 
-    novo_saldo = await db.registrar_pagamento_e_fechar(comanda_id, valor)
+    # Guarda pagamento pendente e pede confirmação
+    _pagamento_pendente = {
+        "comanda_id": comanda_id,
+        "nome_real": nome_real,
+        "valor": valor,
+        "saldo_devedor": saldo_devedor,
+    }
+
+    fecha = " e *fechar comanda*" if valor >= saldo_devedor else ""
+    return (
+        f"💰 Registrar pagamento de *R$ {valor:.2f}* para *{nome_real}*{fecha}?\n"
+        f"Responda *sim* ou *não*."
+    )
+
+
+async def _executar_pagamento(dados: dict) -> str:
+    """Executa o pagamento após confirmação."""
+    novo_saldo = await db.registrar_pagamento_e_fechar(dados["comanda_id"], dados["valor"])
 
     if novo_saldo <= 0:
-        return f"✅ *{nome_real}* pagou R$ {valor:.2f}. Comanda fechada! 🎉"
+        return f"✅ *{dados['nome_real']}* pagou R$ {dados['valor']:.2f}. Comanda fechada! 🎉"
     else:
         return (
-            f"✅ *{nome_real}* pagou R$ {valor:.2f}.\n"
+            f"✅ *{dados['nome_real']}* pagou R$ {dados['valor']:.2f}.\n"
             f"Saldo restante: R$ {novo_saldo:.2f}"
         )
 

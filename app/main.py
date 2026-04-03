@@ -163,17 +163,27 @@ async def webhook(request: Request):
 # Processadores
 # ------------------------------------------------------------------
 
-async def _process_text(text: str) -> None:
+async def _process_text(text: str, transcription_prefix: str = "") -> None:
     if not text:
         return
     logger.info("Processando texto: %s", text)
-    action = await nlu.extract_action(text)
+
+    # Intercepta confirmação de pagamento sem chamar o NLU
+    if router.has_pending_payment() and text.strip().lower() in (
+        "sim", "s", "yes", "confirma", "confirmar",
+        "não", "nao", "no", "n", "cancela", "cancelar",
+    ):
+        action = {"intent": "desconhecido", "params": {"mensagem": text.strip()}}
+    else:
+        action = await nlu.extract_action(text)
+
     reply = await router.dispatch(action)
-    await send_text(reply)
+    await send_text(f"{transcription_prefix}{reply}" if transcription_prefix else reply)
 
 
 async def _process_audio(payload: dict) -> None:
     logger.info("Processando áudio...")
     audio_bytes = await download_audio(payload)
     text = await transcription.transcribe(audio_bytes)
-    await _process_text(text)
+    prefix = f"🎤 *Entendi:* _{text}_\n\n"
+    await _process_text(text, transcription_prefix=prefix)
