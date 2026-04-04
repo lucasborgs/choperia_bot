@@ -146,12 +146,12 @@ async def webhook(request: Request):
 
     # Só processa mensagens do autochat (conversa consigo mesmo).
     # fromMe=True + source="app" → dono digitou/gravou no celular ✅
-    # chatId deve ser o autochat do dono (OWNER_PHONE@c.us) ✅
+    # to termina com @lid → autochat (mensagens para outros usam @c.us) ✅
     if not payload.get("fromMe", False) or payload.get("source") != "app":
         return {"status": "ignored"}
 
-    chat_id = payload.get("from", "")
-    if chat_id != f"{settings.OWNER_PHONE}@c.us":
+    to = payload.get("to", "")
+    if not to.endswith("@lid"):
         return {"status": "ignored"}
 
     # WAHA coloca o type em _data.type, não no topo do payload
