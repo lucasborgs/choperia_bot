@@ -116,17 +116,23 @@ async def api_fluxo(de: str | None = None, ate: str | None = None):
 async def webhook(request: Request):
     raw: dict[str, Any] = await request.json()
 
-    # DEBUG: loga evento e campos-chave para diagnosticar filtros
+    # DEBUG: loga evento e todas as chaves do payload
     event = raw.get("event", "")
     payload_debug = raw.get("payload", {})
+    if payload_debug.get("fromMe") and payload_debug.get("source") == "app":
+        logger.info("DEBUG payload keys: %s", list(payload_debug.keys()))
+        logger.info("DEBUG payload parcial: from=%s to=%s chatId=%s _data.self=%s",
+            payload_debug.get("from"),
+            payload_debug.get("to"),
+            payload_debug.get("chatId"),
+            payload_debug.get("_data", {}).get("self"),
+        )
     logger.info(
-        "Webhook recebido: event=%s fromMe=%s source=%s from=%s to=%s chatId=%s type=%s",
+        "Webhook recebido: event=%s fromMe=%s source=%s from=%s type=%s",
         event,
         payload_debug.get("fromMe"),
         payload_debug.get("source"),
         payload_debug.get("from"),
-        payload_debug.get("to"),
-        payload_debug.get("chatId"),
         payload_debug.get("type"),
     )
 
