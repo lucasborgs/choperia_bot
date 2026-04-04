@@ -270,7 +270,7 @@ async def remover_item(comanda_id: UUID, produto_nome: str, quantidade: int) -> 
                 await conn.execute(
                     """
                     UPDATE itens_comanda
-                    SET quantidade = $1, valor_total = $1 * valor_unitario
+                    SET quantidade = $1::int, valor_total = $1::numeric * valor_unitario
                     WHERE id = $2
                     """,
                     nova_qtd,
