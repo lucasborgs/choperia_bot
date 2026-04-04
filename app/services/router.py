@@ -215,8 +215,11 @@ async def _listar_comandas(params: dict) -> str:
     if not comandas:
         return "ℹ️ Nenhuma comanda aberta no momento."
 
+    # Ordena por total consumido (quem bebeu mais primeiro)
+    comandas.sort(key=lambda c: c["total_consumido"], reverse=True)
+
     linhas = "\n".join(
-        f"• *{c['nome_cliente']}* — R$ {c['saldo_devedor']:.2f} a pagar"
+        f"• *{c['nome_cliente']}* — R$ {c['total_consumido']:.2f} consumido · R$ {c['saldo_devedor']:.2f} a pagar"
         for c in comandas
     )
     return f"📋 *Comandas abertas ({len(comandas)}):*\n{linhas}"
