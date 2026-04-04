@@ -67,21 +67,20 @@ async def limpar_e_inserir_cardapio(
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            rows = await conn.fetch(
-                """
-                INSERT INTO produtos_dia (nome, preco, data_venda)
-                SELECT item->>'produto', (item->>'preco')::DECIMAL, $2
-                FROM jsonb_array_elements($1::jsonb) AS item
-                ON CONFLICT (lower(nome), data_venda)
-                DO UPDATE SET preco = EXCLUDED.preco, nome = EXCLUDED.nome
-                RETURNING nome, preco
-                """,
-                json.dumps([
-                    {"produto": i["produto"], "preco": float(i["preco"])}
-                    for i in itens
-                ]),
-                hoje,
-            )
+            rows = []
+            for item in itens:
+                nome = item["produto"].strip()
+                preco = float(item["preco"])
+                # Remove versão anterior (case-insensitive) e insere nova
+                await conn.execute(
+                    "DELETE FROM produtos_dia WHERE data_venda = $1 AND lower(nome) = lower($2)",
+                    hoje, nome,
+                )
+                row = await conn.fetchrow(
+                    "INSERT INTO produtos_dia (nome, preco, data_venda) VALUES ($1, $2, $3) RETURNING nome, preco",
+                    nome, preco, hoje,
+                )
+                rows.append(row)
     return rows
 
 

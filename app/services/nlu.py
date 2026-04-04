@@ -142,5 +142,43 @@ async def extract_action(text: str) -> dict:
         logger.warning("NLU retornou JSON inválido: %s", raw)
         action = {"intent": "desconhecido", "params": {"mensagem": text}}
 
+    _normalizar_nomes(action)
     logger.info("NLU action: %s", action)
     return action
+
+
+def _normalizar_nomes(action: dict) -> None:
+    """Normaliza nomes de produtos para Title Case (Pilsen, Session Ipa → Session IPA)."""
+    params = action.get("params", {})
+    intent = action.get("intent", "")
+
+    if intent == "definir_cardapio":
+        for item in params.get("itens", []):
+            if "produto" in item:
+                item["produto"] = _title(item["produto"])
+
+    elif intent == "adicionar_itens":
+        for item in params.get("itens", []):
+            if "produto" in item:
+                item["produto"] = _title(item["produto"])
+
+    elif intent in ("remover_item", "remover_cardapio", "configurar_produto"):
+        if "produto" in params:
+            params["produto"] = _title(params["produto"])
+
+    elif intent == "remover_entrada":
+        if params.get("produto"):
+            params["produto"] = _title(params["produto"])
+
+
+def _title(nome: str) -> str:
+    """Title case que preserva siglas comuns (IPA, APA, etc.)."""
+    siglas = {"ipa", "apa", "ipa's"}
+    partes = nome.strip().split()
+    resultado = []
+    for p in partes:
+        if p.lower() in siglas:
+            resultado.append(p.upper())
+        else:
+            resultado.append(p.capitalize())
+    return " ".join(resultado)
