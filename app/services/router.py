@@ -65,9 +65,7 @@ async def dispatch(action: dict) -> str:
         "relatorio_dia": _relatorio_dia,
         "renomear_cliente": _renomear_cliente,
         "registrar_entrada": _registrar_entrada,
-        "remover_cardapio": _remover_cardapio,
         "remover_entrada": _remover_entrada,
-        "configurar_produto": _configurar_produto,
         "desconhecido": _desconhecido,
     }
 
@@ -330,9 +328,6 @@ async def _renomear_cliente(params: dict) -> str:
     return f"✅ Nome corrigido: *{nome_atual}* → *{nome_novo}*"
 
 
-_ML_POR_DOSE = 400  # copo padrão de chopp
-
-
 async def _registrar_entrada(params: dict) -> str:
     itens = params.get("itens", [])
     fornecedor = (params.get("fornecedor") or "").strip() or None
@@ -357,40 +352,6 @@ async def _registrar_entrada(params: dict) -> str:
         texto += f"\nFornecedor: {fornecedor}"
     texto += f"\n─────────────\nTotal: R$ {total_geral:.2f}"
     return texto
-
-
-async def _configurar_produto(params: dict) -> str:
-    produto = params.get("produto", "").strip()
-    perda_pct = _safe_float(params.get("perda_pct", 10.0), default=10.0)
-
-    if not produto:
-        return "❌ Informe o nome do produto."
-    if not (0 <= perda_pct <= 100):
-        return "❌ Percentual de perda deve ser entre 0 e 100."
-
-    await db.upsert_configuracao_produto(produto, perda_pct)
-
-    fator = 1 - perda_pct / 100
-    doses_50 = int(50_000 / _ML_POR_DOSE * fator)
-    doses_30 = int(30_000 / _ML_POR_DOSE * fator)
-
-    return (
-        f"⚙️ *{produto} configurado!*\n"
-        f"• Barril de 50L → ~{doses_50} doses úteis\n"
-        f"• Barril de 30L → ~{doses_30} doses úteis\n"
-        f"• Perda estimada: {perda_pct:.0f}% · Dose: {_ML_POR_DOSE}ml"
-    )
-
-
-async def _remover_cardapio(params: dict) -> str:
-    produto = params.get("produto", "").strip()
-    if not produto:
-        return "❌ Informe o produto a remover do cardápio."
-
-    removido = await db.remover_produto_cardapio(produto)
-    if not removido:
-        return f"❌ *{produto}* não encontrado no cardápio de hoje."
-    return f"✅ *{produto}* removido do cardápio."
 
 
 async def _remover_entrada(params: dict) -> str:
