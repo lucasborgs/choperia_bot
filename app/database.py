@@ -93,15 +93,42 @@ async def buscar_cardapio_hoje() -> list[asyncpg.Record]:
         )
 
 
-async def buscar_preco_produto(nome: str) -> Decimal | None:
+async def buscar_preco_produto(nome: str) -> dict | None:
+    """Busca preço do produto no cardápio de hoje.
+    Retorna {"preco": Decimal, "nome_real": str} ou None.
+    Tenta match exato primeiro, depois similaridade contra o cardápio do dia.
+    """
+    from difflib import SequenceMatcher
+
     pool = get_pool()
     async with pool.acquire() as conn:
+        # 1. Match exato (case-insensitive)
         row = await conn.fetchrow(
-            "SELECT preco FROM produtos_dia WHERE data_venda = $1 AND lower(nome) = lower($2)",
+            "SELECT nome, preco FROM produtos_dia WHERE data_venda = $1 AND lower(nome) = lower($2)",
             _hoje(),
             nome,
         )
-    return row["preco"] if row else None
+        if row:
+            return {"preco": row["preco"], "nome_real": row["nome"]}
+
+        # 2. Fallback: similaridade contra cardápio do dia
+        cardapio = await conn.fetch(
+            "SELECT nome, preco FROM produtos_dia WHERE data_venda = $1",
+            _hoje(),
+        )
+
+    melhor_match = None
+    melhor_ratio = 0.0
+    for item in cardapio:
+        ratio = SequenceMatcher(None, nome.lower(), item["nome"].lower()).ratio()
+        if ratio > melhor_ratio:
+            melhor_ratio = ratio
+            melhor_match = item
+
+    if melhor_match and melhor_ratio >= 0.6:
+        return {"preco": melhor_match["preco"], "nome_real": melhor_match["nome"]}
+
+    return None
 
 
 async def remover_produto_cardapio(nome: str) -> bool:

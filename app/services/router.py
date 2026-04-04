@@ -119,18 +119,18 @@ async def _adicionar_itens(params: dict) -> str:
     if not itens_req:
         return "❌ Nenhum item informado."
 
-    # Resolve preços no cardápio do dia
+    # Resolve preços no cardápio do dia (com fallback por similaridade)
     itens_com_preco = []
     nao_encontrados = []
     for item in itens_req:
         produto = item.get("produto", "").strip()
         quantidade = _safe_int(item.get("quantidade", 1), default=1)
-        preco = await db.buscar_preco_produto(produto)
-        if preco is None:
+        resultado = await db.buscar_preco_produto(produto)
+        if resultado is None:
             nao_encontrados.append(produto)
         else:
             itens_com_preco.append(
-                {"produto": produto, "quantidade": quantidade, "valor_unitario": preco}
+                {"produto": resultado["nome_real"], "quantidade": quantidade, "valor_unitario": resultado["preco"]}
             )
 
     if nao_encontrados:
