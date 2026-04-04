@@ -120,11 +120,13 @@ async def webhook(request: Request):
     event = raw.get("event", "")
     payload_debug = raw.get("payload", {})
     logger.info(
-        "Webhook recebido: event=%s fromMe=%s source=%s from=%s type=%s",
+        "Webhook recebido: event=%s fromMe=%s source=%s from=%s to=%s chatId=%s type=%s",
         event,
         payload_debug.get("fromMe"),
         payload_debug.get("source"),
         payload_debug.get("from"),
+        payload_debug.get("to"),
+        payload_debug.get("chatId"),
         payload_debug.get("type"),
     )
 
