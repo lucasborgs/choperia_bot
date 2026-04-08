@@ -148,9 +148,22 @@ async def remover_produto_cardapio(nome: str) -> bool:
 # ------------------------------------------------------------------
 
 async def buscar_comandas_abertas_por_nome(nome: str) -> list[asyncpg.Record]:
-    """Retorna todas as comandas abertas cujo nome contém a string buscada."""
+    """Retorna comandas abertas: prioriza match exato, senão busca parcial."""
     pool = get_pool()
     async with pool.acquire() as conn:
+        # 1. Match exato (case-insensitive)
+        exatas = await conn.fetch(
+            """
+            SELECT id, nome_cliente, data_criacao
+            FROM comandas
+            WHERE status = 'aberta' AND lower(nome_cliente) = lower($1)
+            ORDER BY data_criacao
+            """,
+            nome,
+        )
+        if exatas:
+            return exatas
+        # 2. Fallback: busca parcial
         return await conn.fetch(
             """
             SELECT id, nome_cliente, data_criacao
@@ -299,24 +312,25 @@ async def buscar_itens_comanda(comanda_id: UUID) -> list[asyncpg.Record]:
 # pagamentos
 # ------------------------------------------------------------------
 
-async def registrar_pagamento(comanda_id: UUID, valor: Decimal) -> None:
+async def registrar_pagamento(comanda_id: UUID, valor: Decimal, metodo: str | None = None) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO pagamentos (comanda_id, valor) VALUES ($1, $2)",
+            "INSERT INTO pagamentos (comanda_id, valor, metodo) VALUES ($1, $2, $3)",
             comanda_id,
             valor,
+            metodo,
         )
 
 
-async def registrar_pagamento_e_fechar(comanda_id: UUID, valor: Decimal) -> Decimal:
+async def registrar_pagamento_e_fechar(comanda_id: UUID, valor: Decimal, metodo: str | None = None) -> Decimal:
     """Registra pagamento e fecha a comanda se quitada. Retorna o novo saldo devedor."""
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
-                "INSERT INTO pagamentos (comanda_id, valor) VALUES ($1, $2)",
-                comanda_id, valor,
+                "INSERT INTO pagamentos (comanda_id, valor, metodo) VALUES ($1, $2, $3)",
+                comanda_id, valor, metodo,
             )
             row = await conn.fetchrow(
                 """

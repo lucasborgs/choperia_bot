@@ -43,16 +43,19 @@ async def dispatch(action: dict) -> str:
     if _pagamento_pendente is not None:
         pendente = _pagamento_pendente
         texto_original = params.get("mensagem", "").strip().lower() if intent == "desconhecido" else ""
-        # Aceita "sim", "s", "yes", "confirma" como confirmação
-        if intent == "desconhecido" and texto_original in ("sim", "s", "yes", "confirma", "confirmar"):
+        _METODOS = {"credito": "Crédito", "crédito": "Crédito", "debito": "Débito", "débito": "Débito",
+                     "pix": "Pix", "dinheiro": "Dinheiro"}
+        if intent == "desconhecido" and texto_original in _METODOS:
             _pagamento_pendente = None
+            pendente["metodo"] = _METODOS[texto_original]
             return await _executar_pagamento(pendente)
+        elif intent == "desconhecido" and texto_original in ("não", "nao", "no", "n", "cancela", "cancelar"):
+            _pagamento_pendente = None
+            return "❌ Pagamento cancelado."
         else:
             # Qualquer outra mensagem cancela o pagamento pendente
             _pagamento_pendente = None
-            if intent == "desconhecido" and texto_original in ("não", "nao", "no", "n", "cancela", "cancelar"):
-                return "❌ Pagamento cancelado."
-            # Não era sim/não — processa o novo comando normalmente
+            # Não era método/não — processa o novo comando normalmente
 
     handlers = {
         "definir_cardapio": _definir_cardapio,
@@ -281,19 +284,21 @@ async def _pagar_conta(params: dict) -> str:
     fecha = " e *fechar comanda*" if valor >= saldo_devedor else ""
     return (
         f"💰 Registrar pagamento de *R$ {valor:.2f}* para *{nome_real}*{fecha}?\n"
-        f"Responda *sim* ou *não*."
+        f"Responda: *crédito*, *débito*, *pix*, *dinheiro* ou *não*."
     )
 
 
 async def _executar_pagamento(dados: dict) -> str:
     """Executa o pagamento após confirmação."""
-    novo_saldo = await db.registrar_pagamento_e_fechar(dados["comanda_id"], dados["valor"])
+    metodo = dados.get("metodo")
+    novo_saldo = await db.registrar_pagamento_e_fechar(dados["comanda_id"], dados["valor"], metodo)
+    metodo_str = f" ({metodo})" if metodo else ""
 
     if novo_saldo <= 0:
-        return f"✅ *{dados['nome_real']}* pagou R$ {dados['valor']:.2f}. Comanda fechada! 🎉"
+        return f"✅ *{dados['nome_real']}* pagou R$ {dados['valor']:.2f}{metodo_str}. Comanda fechada! 🎉"
     else:
         return (
-            f"✅ *{dados['nome_real']}* pagou R$ {dados['valor']:.2f}.\n"
+            f"✅ *{dados['nome_real']}* pagou R$ {dados['valor']:.2f}{metodo_str}.\n"
             f"Saldo restante: R$ {novo_saldo:.2f}"
         )
 

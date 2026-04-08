@@ -192,7 +192,7 @@ async def _process_text(text: str, transcription_prefix: str = "") -> None:
 
     # Intercepta confirmação de pagamento sem chamar o NLU
     if router.has_pending_payment() and text.strip().lower() in (
-        "sim", "s", "yes", "confirma", "confirmar",
+        "credito", "crédito", "debito", "débito", "pix", "dinheiro",
         "não", "nao", "no", "n", "cancela", "cancelar",
     ):
         action = {"intent": "desconhecido", "params": {"mensagem": text.strip()}}
