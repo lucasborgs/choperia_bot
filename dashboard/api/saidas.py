@@ -62,6 +62,21 @@ class handler(BaseHTTPRequestHandler):
             params,
         )
 
+        # Pagamentos por método
+        pag_where = "WHERE p.criado_em::date BETWEEN %s AND %s"
+        pag_params = [de, ate]
+        metodos = query(
+            f"""
+            SELECT COALESCE(p.metodo, 'Não informado') AS metodo,
+                   SUM(p.valor) AS total
+            FROM pagamentos p
+            {pag_where}
+            GROUP BY COALESCE(p.metodo, 'Não informado')
+            ORDER BY SUM(p.valor) DESC
+            """,
+            pag_params,
+        )
+
         data = {
             "rows": rows,
             "resumo": {
@@ -69,6 +84,7 @@ class handler(BaseHTTPRequestHandler):
                 "ticket_medio": ticket_medio,
             },
             "ranking": ranking,
+            "metodos": metodos,
         }
 
         self.send_response(200)

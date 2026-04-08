@@ -146,8 +146,17 @@
 
   .loading { color: var(--muted); padding: 20px 0; }
 
+  .charts-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .charts-row .chart-wrap { margin-bottom: 0; }
+
   @media (max-width: 600px) {
     .cards { grid-template-columns: 1fr 1fr; }
+    .charts-row { grid-template-columns: 1fr; }
     header h1 { font-size: 15px; }
   }
 </style>
@@ -195,7 +204,10 @@
     <button class="btn" onclick="loadSaidas()">Buscar</button>
   </div>
   <div class="cards" id="s-cards"></div>
-  <div class="chart-wrap" id="s-chart-wrap" style="display:none"><canvas id="s-chart"></canvas></div>
+  <div class="charts-row">
+    <div class="chart-wrap" id="s-chart-wrap" style="display:none"><canvas id="s-chart"></canvas></div>
+    <div class="chart-wrap" id="s-metodo-wrap" style="display:none"><canvas id="s-metodo-chart"></canvas></div>
+  </div>
   <div class="table-wrap">
     <table>
       <thead><tr>
@@ -321,6 +333,7 @@ async function loadEntradas() {
 }
 
 let saidasChart = null;
+let metodoChart = null;
 
 async function loadSaidas() {
   const de = document.getElementById('s-de').value;
@@ -337,11 +350,13 @@ async function loadSaidas() {
   const rows = data.rows;
   const resumo = data.resumo;
   const ranking = data.ranking || [];
+  const metodos = data.metodos || [];
 
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="6" class="empty">Nenhum resultado.</td></tr>';
     buildCards(document.getElementById('s-cards'), []);
     document.getElementById('s-chart-wrap').style.display = 'none';
+    document.getElementById('s-metodo-wrap').style.display = 'none';
     return;
   }
 
@@ -394,6 +409,40 @@ async function loadSaidas() {
     });
   } else {
     document.getElementById('s-chart-wrap').style.display = 'none';
+  }
+
+  // Donut chart — métodos de pagamento
+  if (metodos.length) {
+    document.getElementById('s-metodo-wrap').style.display = 'block';
+    const mCtx = document.getElementById('s-metodo-chart');
+    if (metodoChart) metodoChart.destroy();
+    const metodoColors = {
+      'Pix': '#10b981', 'Crédito': '#3b82f6', 'Débito': '#f59e0b',
+      'Dinheiro': '#8b5cf6', 'Não informado': '#64748b'
+    };
+    metodoChart = new Chart(mCtx, {
+      type: 'doughnut',
+      data: {
+        labels: metodos.map(m => m.metodo),
+        datasets: [{
+          data: metodos.map(m => m.total),
+          backgroundColor: metodos.map(m => metodoColors[m.metodo] || '#ec4899'),
+          borderColor: '#1e293b',
+          borderWidth: 2,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          title: { display: true, text: 'Pagamentos por Método', color: '#94a3b8', font: { size: 13 } },
+          legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 12, font: { size: 11 } } },
+          tooltip: { callbacks: { label: ctx => ctx.label + ': R$' + ctx.parsed.toFixed(2) } }
+        }
+      }
+    });
+  } else {
+    document.getElementById('s-metodo-wrap').style.display = 'none';
   }
 }
 
