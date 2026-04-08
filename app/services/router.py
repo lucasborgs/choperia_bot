@@ -69,6 +69,7 @@ async def dispatch(action: dict) -> str:
         "renomear_cliente": _renomear_cliente,
         "registrar_entrada": _registrar_entrada,
         "remover_entrada": _remover_entrada,
+        "remover_cardapio": _remover_cardapio,
         "desconhecido": _desconhecido,
     }
 
@@ -111,6 +112,16 @@ async def _consultar_cardapio(params: dict) -> str:
         return "ℹ️ Nenhum cardápio definido para hoje."
     linhas = "\n".join(f"• {r['nome']} — R$ {r['preco']:.2f}" for r in cardapio)
     return f"📋 *Cardápio de hoje ({len(cardapio)} itens):*\n{linhas}"
+
+
+async def _remover_cardapio(params: dict) -> str:
+    produto = params.get("produto", "").strip()
+    if not produto:
+        return "❌ Informe o produto a remover do cardápio."
+    removido = await db.remover_produto_cardapio(produto)
+    if not removido:
+        return f"ℹ️ *{produto}* não encontrado no cardápio de hoje."
+    return f"✅ *{produto}* removido do cardápio."
 
 
 async def _adicionar_itens(params: dict) -> str:

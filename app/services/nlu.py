@@ -9,6 +9,7 @@ Intents suportadas:
   - listar_comandas    (sem params)
   - pagar_conta        params: cliente, valor (opcional – se omitido paga tudo)
   - relatorio_dia      (sem params)
+  - remover_cardapio   params: produto
   - desconhecido       params: mensagem (texto original)
 """
 
@@ -111,7 +112,15 @@ Intents disponíveis:
     - Exemplo: "Qual o cardápio de hoje?" / "O que tem hoje?" / "Quais cervejas temos?" / "Cardápio do dia" / "O que tem no cardápio hoje?" / "Me mostra o cardápio de hoje" / "Tem IPA hoje?" / "Qual o preço da Pilsen?" / "Quanto tá a IPA?"
     - IMPORTANTE: NÃO confundir com definir_cardapio. Se o dono está PERGUNTANDO (não informando preços), use consultar_cardapio.
 
-11. remover_entrada
+11. remover_cardapio
+    - Por que: o dono quer tirar um produto do cardápio (parou de vender, acabou o estoque, etc.)
+    - Quando: o dono quer remover um produto do cardápio do dia
+    - Params: {"produto": str}
+    - IMPORTANTE: não confundir com remover_item (remove item da comanda de um CLIENTE). Essa intent é para remover um PRODUTO do cardápio.
+    - Dica: se a mensagem menciona "do cardápio", "do menu", ou não menciona nenhum cliente, é remover_cardapio. Se menciona um cliente (ex: "tira do João"), é remover_item.
+    - Exemplo: "Tira a Coca-Cola do cardápio" / "Remove o Amendoim do menu" / "Não vamos mais vender Sprite" / "Acabou a Sour Goiaba, tira do cardápio" / "Remove Growler IPA do cardápio"
+
+12. remover_entrada
     - Por que: às vezes o dono registra uma entrada de compra errada (ex: compra de gelo registrada como compra de cerveja), e precisa remover para não distorcer os relatórios e controle financeiro
     - Quando: o dono quer apagar/cancelar uma entrada de compra registrada errado
     - Params: {"produto": str | null}
@@ -119,7 +128,7 @@ Intents disponíveis:
     - Se produto não mencionado, use null (remove a última entrada registrada)
     - Exemplo: "Apaga a última compra" / "Remove a entrada do gelo" / "Cancela a última compra" / "Tira a entrada do barril de IPA que eu lancei errado" / "Remove a última entrada registrada" / "Apaga a última compra que registrei" / "Cancela a última entrada que lancei" / "Tira a entrada do gelo que eu lancei errado"
 
-12. desconhecido
+13. desconhecido
     - Quando nenhuma outra intent se aplica
     - Params: {"mensagem": str}
 
@@ -170,7 +179,7 @@ def _normalizar_nomes(action: dict) -> None:
             if "produto" in item:
                 item["produto"] = _title(item["produto"])
 
-    elif intent in ("remover_item", "remover_cardapio", "configurar_produto"):
+    elif intent in ("remover_item", "remover_cardapio"):
         if "produto" in params:
             params["produto"] = _title(params["produto"])
 
