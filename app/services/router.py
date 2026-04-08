@@ -230,6 +230,8 @@ async def _pagar_conta(params: dict) -> str:
 
     cliente = params.get("cliente", "").strip()
     valor_raw = params.get("valor")
+    produto_raw = params.get("produto")
+    quantidade_raw = params.get("quantidade")
 
     if not cliente:
         return "❌ Informe o nome do cliente."
@@ -250,13 +252,19 @@ async def _pagar_conta(params: dict) -> str:
 
     saldo_devedor: Decimal = saldo["saldo_devedor"]
 
-    if valor_raw is None:
-        valor = saldo_devedor
-    else:
+    if valor_raw is not None:
         parsed = _safe_float(valor_raw)
         if parsed is None:
             return f"❌ Valor inválido: *{valor_raw}*"
         valor = Decimal(str(parsed))
+    elif produto_raw and quantidade_raw:
+        preco_info = await db.buscar_preco_produto(produto_raw)
+        if preco_info is None:
+            return f"❌ Produto *{produto_raw}* não encontrado no cardápio de hoje."
+        qtd = int(quantidade_raw)
+        valor = Decimal(str(float(preco_info["preco"]) * qtd))
+    else:
+        valor = saldo_devedor
 
     if valor <= 0:
         await db.fechar_comanda(comanda_id)

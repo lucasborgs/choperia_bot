@@ -78,9 +78,11 @@ Intents disponíveis:
 6. pagar_conta
    - Por que: quando um cliente vai pagar, o dono precisa registrar o pagamento para fechar a comanda e calcular o total do dia
    - Quando: o dono registra pagamento de um cliente
-   - Params: {"cliente": str, "valor": float | null}
-   - Se valor não mencionado, use null (pagamento total)
-   - Exemplo: "João pagou tudo" / "Fecha a conta da Ana" / "Pedro pagou 30" / "Carlos pagou tudo que deve" / "O Lucas pagou a conta dele, fecha lá"/ "A Maria pagou metade"
+   - Params: {"cliente": str, "valor": float | null, "produto": str | null, "quantidade": int | null}
+   - Se valor numérico explícito (ex: "pagou 30"), use valor=30, produto=null, quantidade=null
+   - Se pagamento em produto (ex: "pagou 1 pilsen"), use valor=null, produto="Pilsen", quantidade=1
+   - Se pagou tudo (ex: "pagou tudo", "fecha a conta"), use valor=null, produto=null, quantidade=null
+   - Exemplo: "João pagou tudo" / "Fecha a conta da Ana" / "Pedro pagou 30" / "Felipe pagou 1 pilsen" / "Carlos pagou 2 IPA" / "O Lucas pagou a conta dele, fecha lá" / "A Maria pagou metade"
 
 7. relatorio_dia
    - Por que: no final do dia de vendas, o dono quer um resumo do que aconteceu (total vendido, clientes mais frequentes, etc.) para ter insights e planejar melhor os próximos dias
