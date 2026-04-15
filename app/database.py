@@ -11,6 +11,25 @@ from app.config import settings
 
 _BRT = ZoneInfo("America/Sao_Paulo")
 
+_ML_POR_DOSE = 400
+
+_CONVERSOES_UNIDADE: dict[tuple[str, str], Decimal] = {
+    ("L", "ml"): Decimal("1000"),
+    ("ml", "L"): Decimal("0.001"),
+    ("kg", "g"): Decimal("1000"),
+    ("g", "kg"): Decimal("0.001"),
+}
+
+
+def _converter_unidade(qtd: Decimal, de: str, para: str) -> Decimal | None:
+    """Converte qtd entre unidades compatíveis. Retorna None se incompatível."""
+    if de == para:
+        return qtd
+    fator = _CONVERSOES_UNIDADE.get((de, para))
+    if fator is None:
+        return None
+    return qtd * fator
+
 
 def _hoje() -> date:
     """Retorna o dia operacional (06:00–05:59). Antes das 6h conta como dia anterior."""
@@ -84,9 +103,37 @@ async def limpar_e_inserir_cardapio(
     return rows
 
 
+async def _garantir_cardapio_hoje(conn) -> None:
+    """Se não há cardápio para hoje, copia do último dia que teve."""
+    hoje = _hoje()
+    existe = await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM produtos_dia WHERE data_venda = $1)",
+        hoje,
+    )
+    if existe:
+        return
+    # Busca a data mais recente com cardápio
+    ultima = await conn.fetchval(
+        "SELECT MAX(data_venda) FROM produtos_dia WHERE data_venda < $1",
+        hoje,
+    )
+    if ultima is None:
+        return
+    await conn.execute(
+        """
+        INSERT INTO produtos_dia (nome, preco, data_venda)
+        SELECT nome, preco, $1
+        FROM produtos_dia
+        WHERE data_venda = $2
+        """,
+        hoje, ultima,
+    )
+
+
 async def buscar_cardapio_hoje() -> list[asyncpg.Record]:
     pool = get_pool()
     async with pool.acquire() as conn:
+        await _garantir_cardapio_hoje(conn)
         return await conn.fetch(
             "SELECT nome, preco FROM produtos_dia WHERE data_venda = $1 ORDER BY nome",
             _hoje(),
@@ -102,6 +149,7 @@ async def buscar_preco_produto(nome: str) -> dict | None:
 
     pool = get_pool()
     async with pool.acquire() as conn:
+        await _garantir_cardapio_hoje(conn)
         # 1. Match exato (case-insensitive)
         row = await conn.fetchrow(
             "SELECT nome, preco FROM produtos_dia WHERE data_venda = $1 AND lower(nome) = lower($2)",
@@ -390,60 +438,227 @@ async def listar_comandas_abertas() -> list[asyncpg.Record]:
 # entradas
 # ------------------------------------------------------------------
 
+def _qtd_storage_entrada(
+    qtd: Decimal,
+    unidade_entrada: str,
+    litros: Decimal | None,
+    unidade_storage: str,
+) -> Decimal | None:
+    """Converte quantidade da entrada para unidade do item de estoque.
+
+    Regra spec §Edge: se item é em L e entrada traz 'litros' (capacidade por
+    unidade comprada, ex: 1 barril × 50 L), usa `quantidade * litros`.
+    Caso contrário aplica conversão canônica de unidades.
+    Retorna None se incompatível.
+    """
+    if unidade_storage == "L" and litros is not None:
+        return qtd * litros
+    return _converter_unidade(qtd, unidade_entrada, unidade_storage)
+
+
 async def inserir_entradas(
     itens: list[dict],
     fornecedor: str | None,
 ) -> list[dict]:
+    """Registra entradas (compras) e, quando o produto bate com itens_estoque,
+    incrementa qtd + atualiza custo (último preço) + acumula no lote aberto.
+
+    Raise ValueError se a entrada bate com um item cujo par de unidades é
+    incompatível (ex: entrada em kg para item em L).
+    """
     pool = get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             rows = []
             for item in itens:
-                qtd = float(item["quantidade"])
-                preco = float(item["preco_unitario"])
-                litros = float(item["litros"]) if item.get("litros") else None
+                qtd = Decimal(str(item["quantidade"]))
+                preco = Decimal(str(item["preco_unitario"]))
+                litros = Decimal(str(item["litros"])) if item.get("litros") else None
+                unidade_entrada = item["unidade"]
+
+                estoque = await conn.fetchrow(
+                    "SELECT id, unidade FROM itens_estoque WHERE lower(nome) = lower($1)",
+                    item["produto"],
+                )
+                item_estoque_id = None
+                if estoque is not None:
+                    qtd_storage = _qtd_storage_entrada(
+                        qtd, unidade_entrada, litros, estoque["unidade"],
+                    )
+                    if qtd_storage is None:
+                        raise ValueError(
+                            f"Unidade _{unidade_entrada}_ incompatível com o estoque "
+                            f"cadastrado em _{estoque['unidade']}_."
+                        )
+                    item_estoque_id = estoque["id"]
+                    # qtd sempre incrementa
+                    await conn.execute(
+                        """
+                        UPDATE itens_estoque
+                        SET qtd = qtd + $1, atualizado_em = NOW()
+                        WHERE id = $2
+                        """,
+                        qtd_storage, item_estoque_id,
+                    )
+                    # custo só se preço > 0 (edge case: brinde preserva custo anterior)
+                    if preco > 0 and qtd_storage > 0:
+                        custo_storage = (qtd * preco) / qtd_storage
+                        await conn.execute(
+                            "UPDATE itens_estoque SET custo_unitario = $1 WHERE id = $2",
+                            custo_storage, item_estoque_id,
+                        )
+                    # acumula no lote aberto
+                    lote_id = await _recomputar_lote(conn, item_estoque_id)
+                    await conn.execute(
+                        """
+                        UPDATE lotes_estoque
+                        SET qtd_comprada = qtd_comprada + $1
+                        WHERE id = $2
+                        """,
+                        qtd_storage, lote_id,
+                    )
+
                 row = await conn.fetchrow(
                     """
                     INSERT INTO entradas
-                        (produto_nome, unidade, quantidade, litros, valor_unitario, valor_total, fornecedor)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    RETURNING produto_nome, unidade, quantidade, litros, valor_unitario, valor_total, fornecedor
+                        (produto_nome, unidade, quantidade, litros,
+                         valor_unitario, valor_total, fornecedor, item_estoque_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING produto_nome, unidade, quantidade, litros,
+                              valor_unitario, valor_total, fornecedor
                     """,
-                    item["produto"], item["unidade"], qtd, litros,
-                    preco, qtd * preco, fornecedor,
+                    item["produto"], unidade_entrada, qtd, litros,
+                    preco, qtd * preco, fornecedor, item_estoque_id,
                 )
                 rows.append(dict(row))
     return rows
 
 
 async def remover_ultima_entrada(produto: str | None = None) -> dict | None:
-    """Remove a entrada mais recente (opcionalmente filtrada por produto). Retorna a entrada removida."""
+    """Remove a entrada mais recente (opcionalmente filtrada por produto).
+
+    Se a entrada tinha item_estoque_id, reverte incremento de qtd, acumulador
+    do lote e (se houver entrada anterior do mesmo item) recalcula o custo
+    com base no valor unitário da penúltima entrada.
+
+    Raise ValueError se a entrada pertence a lote fechado (protege histórico).
+    Retorna a entrada removida.
+    """
     pool = get_pool()
     async with pool.acquire() as conn:
-        if produto:
-            row = await conn.fetchrow(
-                """
-                DELETE FROM entradas
-                WHERE id = (
-                    SELECT id FROM entradas
+        async with conn.transaction():
+            if produto:
+                entrada = await conn.fetchrow(
+                    """
+                    SELECT id, produto_nome, unidade, quantidade, litros,
+                           valor_unitario, valor_total, fornecedor,
+                           item_estoque_id, criado_em
+                    FROM entradas
                     WHERE lower(produto_nome) = lower($1)
                     ORDER BY criado_em DESC LIMIT 1
+                    """,
+                    produto,
                 )
-                RETURNING produto_nome, unidade, quantidade, litros, valor_unitario, valor_total, fornecedor
-                """,
-                produto,
-            )
-        else:
-            row = await conn.fetchrow(
-                """
-                DELETE FROM entradas
-                WHERE id = (
-                    SELECT id FROM entradas ORDER BY criado_em DESC LIMIT 1
+            else:
+                entrada = await conn.fetchrow(
+                    """
+                    SELECT id, produto_nome, unidade, quantidade, litros,
+                           valor_unitario, valor_total, fornecedor,
+                           item_estoque_id, criado_em
+                    FROM entradas
+                    ORDER BY criado_em DESC LIMIT 1
+                    """
                 )
-                RETURNING produto_nome, unidade, quantidade, litros, valor_unitario, valor_total, fornecedor
-                """,
-            )
-    return dict(row) if row else None
+            if entrada is None:
+                return None
+
+            if entrada["item_estoque_id"] is not None:
+                item = await conn.fetchrow(
+                    "SELECT id, unidade FROM itens_estoque WHERE id = $1",
+                    entrada["item_estoque_id"],
+                )
+                if item is not None:
+                    lote = await conn.fetchrow(
+                        """
+                        SELECT id, fechamento FROM lotes_estoque
+                        WHERE item_estoque_id = $1
+                          AND abertura <= $2
+                          AND (fechamento IS NULL OR fechamento >= $2)
+                        ORDER BY abertura DESC LIMIT 1
+                        """,
+                        entrada["item_estoque_id"], entrada["criado_em"],
+                    )
+                    if lote is not None and lote["fechamento"] is not None:
+                        raise ValueError(
+                            f"Entrada faz parte do lote fechado em "
+                            f"{lote['fechamento'].date()}. Não é possível remover."
+                        )
+
+                    qtd = Decimal(str(entrada["quantidade"]))
+                    litros = (
+                        Decimal(str(entrada["litros"]))
+                        if entrada["litros"] is not None else None
+                    )
+                    qtd_storage = _qtd_storage_entrada(
+                        qtd, entrada["unidade"], litros, item["unidade"],
+                    )
+                    if qtd_storage is not None:
+                        await conn.execute(
+                            """
+                            UPDATE itens_estoque
+                            SET qtd = qtd - $1, atualizado_em = NOW()
+                            WHERE id = $2
+                            """,
+                            qtd_storage, entrada["item_estoque_id"],
+                        )
+                        if lote is not None:
+                            await conn.execute(
+                                """
+                                UPDATE lotes_estoque
+                                SET qtd_comprada = qtd_comprada - $1
+                                WHERE id = $2
+                                """,
+                                qtd_storage, lote["id"],
+                            )
+
+                    prev = await conn.fetchrow(
+                        """
+                        SELECT valor_unitario, quantidade, litros, unidade
+                        FROM entradas
+                        WHERE item_estoque_id = $1 AND id <> $2
+                        ORDER BY criado_em DESC LIMIT 1
+                        """,
+                        entrada["item_estoque_id"], entrada["id"],
+                    )
+                    if prev is not None:
+                        prev_qtd = Decimal(str(prev["quantidade"]))
+                        prev_preco = Decimal(str(prev["valor_unitario"]))
+                        prev_litros = (
+                            Decimal(str(prev["litros"]))
+                            if prev["litros"] is not None else None
+                        )
+                        prev_qtd_storage = _qtd_storage_entrada(
+                            prev_qtd, prev["unidade"], prev_litros, item["unidade"],
+                        )
+                        if (prev_qtd_storage is not None
+                                and prev_qtd_storage > 0 and prev_preco > 0):
+                            custo_anterior = (prev_qtd * prev_preco) / prev_qtd_storage
+                            await conn.execute(
+                                "UPDATE itens_estoque SET custo_unitario = $1 WHERE id = $2",
+                                custo_anterior, entrada["item_estoque_id"],
+                            )
+
+            await conn.execute("DELETE FROM entradas WHERE id = $1", entrada["id"])
+
+    return {
+        "produto_nome": entrada["produto_nome"],
+        "unidade": entrada["unidade"],
+        "quantidade": entrada["quantidade"],
+        "litros": entrada["litros"],
+        "valor_unitario": entrada["valor_unitario"],
+        "valor_total": entrada["valor_total"],
+        "fornecedor": entrada["fornecedor"],
+    }
 
 
 # ------------------------------------------------------------------
@@ -471,6 +686,593 @@ async def upsert_configuracao_produto(nome: str, perda_pct: float) -> None:
             """,
             nome, perda_pct,
         )
+
+
+# ------------------------------------------------------------------
+# itens_estoque (estoque e categorias — migration 005)
+# ------------------------------------------------------------------
+
+_CATEGORIAS_ESTOQUE = (
+    "malte", "lúpulo", "embalagem pet", "copo",
+    "barril", "garrafa", "petiscos", "gelo",
+)
+_UNIDADES_ESTOQUE = ("L", "ml", "kg", "g", "un")
+
+
+async def criar_item_estoque(
+    nome: str,
+    unidade: str,
+    qtd_inicial: Decimal,
+    custo_unitario: Decimal,
+    categoria: str,
+) -> dict | None:
+    """Cria item de estoque. Retorna None se já existe (case-insensitive)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO itens_estoque (nome, unidade, qtd, custo_unitario, categoria)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (lower(nome)) DO NOTHING
+            RETURNING id, nome, unidade, qtd, custo_unitario, categoria
+            """,
+            nome, unidade, qtd_inicial, custo_unitario, categoria,
+        )
+    return dict(row) if row else None
+
+
+async def buscar_item_estoque(nome: str) -> dict | None:
+    """Match exato case-insensitive. Sem fallback de similaridade (CONCERNS)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, nome, unidade, qtd, custo_unitario, categoria,
+                   criado_em, atualizado_em
+            FROM itens_estoque
+            WHERE lower(nome) = lower($1)
+            """,
+            nome,
+        )
+    return dict(row) if row else None
+
+
+async def listar_estoque() -> list[dict]:
+    """Lista itens agrupáveis por categoria, com valor congelado por linha."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, nome, unidade, qtd, custo_unitario, categoria,
+                   (qtd * custo_unitario) AS valor
+            FROM itens_estoque
+            ORDER BY categoria, lower(nome)
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+async def capital_congelado() -> Decimal:
+    """Σ qtd × custo_unitario sobre todos os itens de estoque."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(
+            "SELECT COALESCE(SUM(qtd * custo_unitario), 0) FROM itens_estoque"
+        )
+    return Decimal(total)
+
+
+async def _recomputar_lote(conn: asyncpg.Connection, item_id: UUID) -> UUID:
+    """Garante que haja um lote aberto para o item. Retorna o id do lote aberto."""
+    row = await conn.fetchrow(
+        """
+        SELECT id FROM lotes_estoque
+        WHERE item_estoque_id = $1 AND fechamento IS NULL
+        """,
+        item_id,
+    )
+    if row:
+        return row["id"]
+    row = await conn.fetchrow(
+        """
+        INSERT INTO lotes_estoque (item_estoque_id)
+        VALUES ($1)
+        RETURNING id
+        """,
+        item_id,
+    )
+    return row["id"]
+
+
+async def atualizar_estoque(
+    nome: str,
+    *,
+    nova_qtd: Decimal | None = None,
+    nova_categoria: str | None = None,
+    novo_custo: Decimal | None = None,
+) -> dict | None:
+    """Update parcial de itens_estoque. Mínimo um campo obrigatório (validado no handler).
+
+    Se nova_qtd informado: calcula delta = nova_qtd - qtd_atual e acumula em
+    lotes_estoque.qtd_ajustes do lote aberto (abre lote se necessário).
+    Ajuste NÃO conta como perda (separado no fechamento do lote).
+
+    Retorna None se o item não existe. Retorna dict com:
+      {anterior: {...}, novo: {...}, delta_qtd, lote_aberto_id}
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            atual = await conn.fetchrow(
+                """
+                SELECT id, nome, unidade, qtd, custo_unitario, categoria
+                FROM itens_estoque
+                WHERE lower(nome) = lower($1)
+                FOR UPDATE
+                """,
+                nome,
+            )
+            if atual is None:
+                return None
+
+            anterior = dict(atual)
+            campos_sql: list[str] = []
+            valores: list = []
+            idx = 1
+
+            delta_qtd: Decimal | None = None
+            lote_id: UUID | None = None
+
+            if nova_qtd is not None:
+                delta_qtd = Decimal(nova_qtd) - Decimal(anterior["qtd"])
+                campos_sql.append(f"qtd = ${idx}")
+                valores.append(Decimal(nova_qtd))
+                idx += 1
+                lote_id = await _recomputar_lote(conn, anterior["id"])
+                await conn.execute(
+                    """
+                    UPDATE lotes_estoque
+                    SET qtd_ajustes = qtd_ajustes + $1
+                    WHERE id = $2
+                    """,
+                    delta_qtd, lote_id,
+                )
+
+            if nova_categoria is not None:
+                campos_sql.append(f"categoria = ${idx}")
+                valores.append(nova_categoria)
+                idx += 1
+
+            if novo_custo is not None:
+                campos_sql.append(f"custo_unitario = ${idx}")
+                valores.append(Decimal(novo_custo))
+                idx += 1
+
+            if not campos_sql:
+                return {
+                    "anterior": anterior,
+                    "novo": anterior,
+                    "delta_qtd": None,
+                    "lote_aberto_id": None,
+                }
+
+            campos_sql.append("atualizado_em = NOW()")
+            valores.append(anterior["id"])
+            novo = await conn.fetchrow(
+                f"""
+                UPDATE itens_estoque
+                SET {", ".join(campos_sql)}
+                WHERE id = ${idx}
+                RETURNING id, nome, unidade, qtd, custo_unitario, categoria
+                """,
+                *valores,
+            )
+
+    return {
+        "anterior": anterior,
+        "novo": dict(novo),
+        "delta_qtd": delta_qtd,
+        "lote_aberto_id": lote_id,
+    }
+
+
+async def fechar_lote(nome_item: str, forcar: bool = False) -> dict | None:
+    """Fecha o lote aberto do item e calcula perda.
+
+    Fórmula (EST-41): perda = qtd_comprada + qtd_ajustes - qtd_vendida - qtd_atual.
+
+    Se qtd_atual > 0 e não `forcar`: retorna {"confirmar": True, ...} sem alterar.
+    Senão: preenche fechamento/qtd_restante/perda_qtd/perda_pct e zera itens_estoque.qtd.
+    Se qtd_vendida == 0: perda_pct = None + sinal "sem_vendas".
+    Retorna None se o item não existe.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            item = await conn.fetchrow(
+                """
+                SELECT id, nome, unidade, qtd
+                FROM itens_estoque
+                WHERE lower(nome) = lower($1)
+                FOR UPDATE
+                """,
+                nome_item,
+            )
+            if item is None:
+                return None
+
+            lote = await conn.fetchrow(
+                """
+                SELECT id, qtd_comprada, qtd_vendida, qtd_ajustes, abertura
+                FROM lotes_estoque
+                WHERE item_estoque_id = $1 AND fechamento IS NULL
+                FOR UPDATE
+                """,
+                item["id"],
+            )
+            if lote is None:
+                return {
+                    "nenhum_lote_aberto": True,
+                    "item_nome": item["nome"],
+                }
+
+            qtd_atual = Decimal(item["qtd"])
+            qtd_comprada = Decimal(lote["qtd_comprada"])
+            qtd_vendida = Decimal(lote["qtd_vendida"])
+            qtd_ajustes = Decimal(lote["qtd_ajustes"])
+
+            perda = qtd_comprada + qtd_ajustes - qtd_vendida - qtd_atual
+            sem_vendas = qtd_vendida == 0
+            perda_pct: Decimal | None = None
+            if not sem_vendas and qtd_comprada > 0:
+                perda_pct = (perda / qtd_comprada) * Decimal("100")
+
+            if qtd_atual > 0 and not forcar:
+                return {
+                    "confirmar": True,
+                    "item_nome": item["nome"],
+                    "unidade": item["unidade"],
+                    "qtd_atual": qtd_atual,
+                    "qtd_comprada": qtd_comprada,
+                    "qtd_vendida": qtd_vendida,
+                    "qtd_ajustes": qtd_ajustes,
+                    "perda": perda,
+                    "perda_pct": perda_pct,
+                    "sem_vendas": sem_vendas,
+                }
+
+            await conn.execute(
+                """
+                UPDATE lotes_estoque
+                SET fechamento   = NOW(),
+                    qtd_restante = $1,
+                    perda_qtd    = $2,
+                    perda_pct    = $3
+                WHERE id = $4
+                """,
+                qtd_atual, perda, perda_pct, lote["id"],
+            )
+            await conn.execute(
+                """
+                UPDATE itens_estoque
+                SET qtd = 0, atualizado_em = NOW()
+                WHERE id = $1
+                """,
+                item["id"],
+            )
+
+    return {
+        "confirmar": False,
+        "item_nome": item["nome"],
+        "unidade": item["unidade"],
+        "qtd_comprada": qtd_comprada,
+        "qtd_vendida": qtd_vendida,
+        "qtd_ajustes": qtd_ajustes,
+        "qtd_restante": qtd_atual,
+        "perda": perda,
+        "perda_pct": perda_pct,
+        "sem_vendas": sem_vendas,
+    }
+
+
+# ------------------------------------------------------------------
+# mapeamento_produto_estoque
+# ------------------------------------------------------------------
+
+async def mapear_produto(
+    produto: str,
+    item_nome: str,
+    consumo: Decimal,
+) -> dict | None:
+    """Associa produto do cardápio a item de estoque com consumo por unidade.
+
+    UPSERT por lower(produto_nome). Retorna None se item de estoque não existe.
+    Retorna dict do mapeamento salvo (com nome do item já resolvido).
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        item = await conn.fetchrow(
+            """
+            SELECT id, nome, unidade
+            FROM itens_estoque
+            WHERE lower(nome) = lower($1)
+            """,
+            item_nome,
+        )
+        if item is None:
+            return None
+
+        row = await conn.fetchrow(
+            """
+            INSERT INTO mapeamento_produto_estoque
+                (produto_nome, item_estoque_id, consumo_por_unidade, unidade)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (lower(produto_nome)) DO UPDATE
+                SET item_estoque_id = EXCLUDED.item_estoque_id,
+                    consumo_por_unidade = EXCLUDED.consumo_por_unidade,
+                    unidade = EXCLUDED.unidade,
+                    atualizado_em = NOW()
+            RETURNING produto_nome, item_estoque_id, consumo_por_unidade, unidade
+            """,
+            produto, item["id"], Decimal(consumo), item["unidade"],
+        )
+    return {
+        "produto_nome": row["produto_nome"],
+        "item_nome": item["nome"],
+        "item_estoque_id": row["item_estoque_id"],
+        "consumo_por_unidade": row["consumo_por_unidade"],
+        "unidade": row["unidade"],
+    }
+
+
+async def listar_mapeamentos() -> list[dict]:
+    """Lista todos os mapeamentos com nome do item resolvido, ordenados por produto."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.produto_nome,
+                   i.nome          AS item_nome,
+                   m.consumo_por_unidade,
+                   m.unidade
+            FROM mapeamento_produto_estoque m
+            JOIN itens_estoque i ON i.id = m.item_estoque_id
+            ORDER BY lower(m.produto_nome)
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+async def remover_mapeamento(produto: str) -> bool:
+    """Remove mapeamento pelo nome do produto (case-insensitive). Retorna True se apagou."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM mapeamento_produto_estoque WHERE lower(produto_nome) = lower($1)",
+            produto,
+        )
+    # asyncpg retorna "DELETE N"
+    return result.endswith(" 0") is False
+
+
+async def consolidar_baixa_estoque(data: date) -> dict:
+    """Aplica baixa consolidada de estoque para o dia operacional.
+
+    Fluxo (idempotente via fechamentos_dia):
+      1. INSERT fechamentos_dia(data_venda) ON CONFLICT DO NOTHING. Se 0 linhas,
+         carrega snapshot persistido e retorna ja_fechado=True.
+      2. Agrega itens_comanda do dia por produto_nome.
+      3. Para cada produto:
+         a. Mapeamento explícito em mapeamento_produto_estoque → usa consumo_por_unidade.
+         b. Senão, match único por substring com item unidade L/ml → default 0.4 L.
+         c. Senão, acumula em produtos_sem_mapa (JSONB no snapshot).
+      4. Decrementa itens_estoque.qtd e acumula lotes_estoque.qtd_vendida.
+      5. Saldo negativo permitido + sinalizado em avisos.
+      6. Persiste totais + produtos_sem_mapa no snapshot.
+
+    Tudo envolto em async with conn.transaction() — erro aborta tudo.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            inserted = await conn.fetchval(
+                """
+                INSERT INTO fechamentos_dia (data_venda)
+                VALUES ($1)
+                ON CONFLICT (data_venda) DO NOTHING
+                RETURNING 1
+                """,
+                data,
+            )
+            if inserted is None:
+                snap = await conn.fetchrow(
+                    """
+                    SELECT data_venda, fechado_em, total_vendido, total_recebido,
+                           total_entradas, produtos_sem_mapa
+                    FROM fechamentos_dia
+                    WHERE data_venda = $1
+                    """,
+                    data,
+                )
+                return {
+                    "ja_fechado": True,
+                    "snapshot": dict(snap) if snap else None,
+                }
+
+            vendas = await conn.fetch(
+                """
+                SELECT i.produto_nome,
+                       SUM(i.quantidade) AS quantidade_total
+                FROM itens_comanda i
+                JOIN comandas c ON c.id = i.comanda_id
+                WHERE c.data_criacao::date = $1
+                GROUP BY i.produto_nome
+                """,
+                data,
+            )
+
+            produtos_baixados: list[dict] = []
+            produtos_sem_mapa: list[str] = []
+            avisos_negativos: list[dict] = []
+
+            for venda in vendas:
+                produto = venda["produto_nome"]
+                qtd_vendida_un = Decimal(venda["quantidade_total"])
+
+                mapping = await conn.fetchrow(
+                    """
+                    SELECT m.item_estoque_id, m.consumo_por_unidade,
+                           i.nome AS item_nome, i.unidade
+                    FROM mapeamento_produto_estoque m
+                    JOIN itens_estoque i ON i.id = m.item_estoque_id
+                    WHERE lower(m.produto_nome) = lower($1)
+                    """,
+                    produto,
+                )
+
+                item_id = None
+                item_unidade = None
+                item_nome = None
+                baixa_storage: Decimal | None = None
+                estrategia = None
+
+                if mapping is not None:
+                    item_id = mapping["item_estoque_id"]
+                    item_unidade = mapping["unidade"]
+                    item_nome = mapping["item_nome"]
+                    baixa_storage = Decimal(mapping["consumo_por_unidade"]) * qtd_vendida_un
+                    estrategia = "mapeamento"
+                else:
+                    candidatos = await conn.fetch(
+                        """
+                        SELECT id, nome, unidade FROM itens_estoque
+                        WHERE unidade IN ('L','ml')
+                          AND (lower(nome) LIKE '%' || lower($1) || '%'
+                            OR lower($1) LIKE '%' || lower(nome) || '%')
+                        """,
+                        produto,
+                    )
+                    if len(candidatos) == 1:
+                        c = candidatos[0]
+                        item_id = c["id"]
+                        item_unidade = c["unidade"]
+                        item_nome = c["nome"]
+                        default_L = Decimal(_ML_POR_DOSE) / Decimal("1000")
+                        if item_unidade == "L":
+                            consumo = default_L
+                        else:  # ml
+                            consumo = Decimal(_ML_POR_DOSE)
+                        baixa_storage = consumo * qtd_vendida_un
+                        estrategia = "default_400ml"
+                    else:
+                        produtos_sem_mapa.append(produto)
+                        continue
+
+                lote_id = await _recomputar_lote(conn, item_id)
+                novo_qtd = await conn.fetchval(
+                    """
+                    UPDATE itens_estoque
+                    SET qtd = qtd - $1, atualizado_em = NOW()
+                    WHERE id = $2
+                    RETURNING qtd
+                    """,
+                    baixa_storage, item_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE lotes_estoque
+                    SET qtd_vendida = qtd_vendida + $1
+                    WHERE id = $2
+                    """,
+                    baixa_storage, lote_id,
+                )
+                produtos_baixados.append({
+                    "produto": produto,
+                    "item_nome": item_nome,
+                    "baixa": baixa_storage,
+                    "unidade": item_unidade,
+                    "estrategia": estrategia,
+                })
+                if novo_qtd is not None and Decimal(novo_qtd) < 0:
+                    avisos_negativos.append({
+                        "item_nome": item_nome,
+                        "qtd": Decimal(novo_qtd),
+                        "unidade": item_unidade,
+                    })
+
+            total_vendido = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(i.valor_total), 0)
+                FROM itens_comanda i
+                JOIN comandas c ON c.id = i.comanda_id
+                WHERE c.data_criacao::date = $1
+                """,
+                data,
+            )
+            total_recebido = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(p.valor), 0)
+                FROM pagamentos p
+                JOIN comandas c ON c.id = p.comanda_id
+                WHERE c.data_criacao::date = $1
+                """,
+                data,
+            )
+            total_entradas = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(valor_total), 0)
+                FROM entradas
+                WHERE criado_em::date = $1
+                """,
+                data,
+            )
+
+            await conn.execute(
+                """
+                UPDATE fechamentos_dia
+                SET total_vendido     = $1,
+                    total_recebido    = $2,
+                    total_entradas    = $3,
+                    produtos_sem_mapa = $4::jsonb
+                WHERE data_venda = $5
+                """,
+                total_vendido, total_recebido, total_entradas,
+                json.dumps(produtos_sem_mapa), data,
+            )
+
+    return {
+        "ja_fechado": False,
+        "produtos_baixados": produtos_baixados,
+        "produtos_sem_mapa": produtos_sem_mapa,
+        "avisos_negativos": avisos_negativos,
+        "total_vendido": total_vendido,
+        "total_recebido": total_recebido,
+        "total_entradas": total_entradas,
+    }
+
+
+async def gasto_por_categoria(de: date, ate: date) -> list[dict]:
+    """Soma entradas.valor_total por categoria do item de estoque no período.
+
+    Entradas sem item_estoque_id (sem FK) caem em 'sem categoria'.
+    Período é calendário — o chamador aplica _hoje() para janelas operacionais.
+    """
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT COALESCE(i.categoria, 'sem categoria') AS categoria,
+                   SUM(e.valor_total)                     AS total,
+                   COUNT(*)                               AS qtd_entradas
+            FROM entradas e
+            LEFT JOIN itens_estoque i ON i.id = e.item_estoque_id
+            WHERE e.criado_em::date BETWEEN $1 AND $2
+            GROUP BY COALESCE(i.categoria, 'sem categoria')
+            ORDER BY total DESC
+            """,
+            de, ate,
+        )
+    return [dict(r) for r in rows]
 
 
 # ------------------------------------------------------------------
@@ -512,7 +1314,6 @@ async def buscar_saidas_dashboard(de: date, ate: date) -> list[dict]:
 
 async def buscar_estoque_resumo() -> list[dict]:
     """Agrega entradas vs saídas por produto, calculando doses para chopps."""
-    _ML_POR_DOSE = 400
     pool = get_pool()
     async with pool.acquire() as conn:
         entradas = await conn.fetch(

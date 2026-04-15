@@ -10,6 +10,14 @@ Intents suportadas:
   - pagar_conta        params: cliente, valor (opcional – se omitido paga tudo)
   - relatorio_dia      (sem params)
   - remover_cardapio   params: produto
+  - definir_estoque    params: nome, unidade, qtd_inicial, custo_unitario, categoria
+  - consultar_estoque  params: nome (opcional)
+  - atualizar_estoque  params: nome, nova_qtd|nova_categoria|novo_custo
+  - mapear_produto     params: produto, item_estoque, consumo, unidade
+  - listar_mapeamentos (sem params)
+  - remover_mapeamento params: produto
+  - gasto_categoria    params: categoria (opcional), de/ate (opcionais)
+  - fechar_lote        params: item, forcar
   - desconhecido       params: mensagem (texto original)
 """
 
@@ -128,7 +136,65 @@ Intents disponíveis:
     - Se produto não mencionado, use null (remove a última entrada registrada)
     - Exemplo: "Apaga a última compra" / "Remove a entrada do gelo" / "Cancela a última compra" / "Tira a entrada do barril de IPA que eu lancei errado" / "Remove a última entrada registrada" / "Apaga a última compra que registrei" / "Cancela a última entrada que lancei" / "Tira a entrada do gelo que eu lancei errado"
 
-13. desconhecido
+13. definir_estoque
+    - Por que: o dono precisa cadastrar itens de estoque (bens comprados: barris, copos, sacos de malte, etc.) para controlar saldo físico e capital congelado
+    - Quando: o dono declara um novo item de estoque com unidade, categoria e, opcionalmente, qtd inicial e custo unitário
+    - IMPORTANTE: NÃO confundir com registrar_entrada. Cadastro apenas DECLARA o item; entrada registra COMPRA (com fornecedor e valor). Gatilhos típicos: "cadastrar estoque", "novo estoque", "definir estoque", "registra no estoque".
+    - IMPORTANTE: categoria é OBRIGATÓRIA e deve ser uma de: malte, lúpulo, embalagem pet, copo, barril, garrafa, petiscos, gelo. Se o dono não mencionar, passe categoria="" (o handler pedirá).
+    - IMPORTANTE: unidade deve ser uma de: L, ml, kg, g, un.
+    - Params: {"nome": str, "unidade": str, "qtd_inicial": float, "custo_unitario": float, "categoria": str}
+    - Exemplo: "Cadastrar estoque Barril Pilsen em L, categoria barril, custo 200" / "Novo item no estoque: saco de malte Pilsen, 25 kg, categoria malte, 180 reais" / "Cria no estoque: Copo 300ml, unidade un, categoria copo, 5 reais cada, começando com 50" / "Registra no estoque Gelo, kg, categoria gelo"
+
+14. consultar_estoque
+    - Por que: o dono precisa ver o saldo atual dos itens (quanto ainda tem, capital congelado)
+    - Quando: o dono pergunta o estoque geral ou de um item específico
+    - IMPORTANTE: NÃO confundir com consultar_cardapio. Estoque = insumos/bens comprados (barris, malte, copos); cardápio = produtos à venda com preço. Gatilhos: "estoque", "depósito", "quanto tem em estoque".
+    - Params: {"nome": str | null}  // null quando é listagem geral
+    - Exemplo: "Como tá o estoque?" / "Mostra o estoque" / "Quanto tem de Barril Pilsen?" / "Estoque do Gelo" / "O que tem no depósito?" / "Estoque do Malte Pilsen"
+
+15. atualizar_estoque
+    - Por que: o dono faz contagem física e precisa ajustar a qtd, corrigir categoria ou custo de um item sem registrar compra
+    - Quando: o dono informa nova qtd/categoria/custo de um item já cadastrado
+    - IMPORTANTE: NÃO confundir com registrar_entrada. Atualizar SOBRESCREVE (inventário físico/correção); entrada SOMA uma compra nova (com fornecedor). Gatilhos: "ajustar estoque", "corrigir", "tá com X na real", "contei e tem Y".
+    - Pelo menos um entre nova_qtd, nova_categoria, novo_custo deve vir; os demais ficam null.
+    - Params: {"nome": str, "nova_qtd": float | null, "nova_categoria": str | null, "novo_custo": float | null}
+    - Exemplo: "Ajustar Barril Pilsen para 43 L, contei agora" / "Corrige a categoria do Copo 300 para copo" / "O custo do Gelo agora é 6 reais" / "Estoque do Malte tá com 20 kg na real" / "Atualiza Barril IPA para 48 L"
+
+16. mapear_produto
+    - Por que: para a baixa automática funcionar, cada produto do cardápio precisa saber quanto de cada insumo consome
+    - Quando: o dono declara que UM produto do cardápio consome X de UM item do estoque por unidade vendida
+    - IMPORTANTE: NÃO confundir com definir_cardapio (que declara PREÇO). Aqui o dono declara CONSUMO FÍSICO. Gatilhos: "consome", "cada X usa Y", "mapear", "toda venda de X tira Y do estoque".
+    - Params: {"produto": str, "item_estoque": str, "consumo": float, "unidade": str}
+    - Exemplo: "Chopp 300 consome 0.3 L de Barril Pilsen" / "Cada Chopp 500 usa 500 ml do Barril IPA" / "Mapear Growler 1L para 1 L do Barril Pilsen" / "Toda venda de Porção de Amendoim tira 100 g dos Petiscos"
+
+17. listar_mapeamentos
+    - Por que: o dono quer ver quais produtos já estão mapeados e quais ainda faltam
+    - Quando: o dono pede a lista de mapeamentos cadastrados
+    - Params: {}
+    - Exemplo: "Mostra os mapeamentos" / "Quais produtos tão mapeados?" / "Lista os mapeamentos de estoque"
+
+18. remover_mapeamento
+    - Por que: um produto saiu do cardápio ou o mapeamento tá errado
+    - Quando: o dono quer apagar o mapeamento de um produto
+    - Params: {"produto": str}
+    - Exemplo: "Remove o mapeamento do Chopp 300" / "Tira o mapeamento da Porção de Amendoim" / "Apaga o mapeamento do Growler 1L"
+
+19. gasto_categoria
+    - Por que: o dono quer entender onde o dinheiro de insumos tá indo (quanto em malte, quanto em gelo, etc.)
+    - Quando: o dono pergunta gasto por categoria num período, ou sem período (default: rolling 7 dias)
+    - IMPORTANTE: NÃO confundir com relatorio_dia (vendas do dia). Aqui é gasto com COMPRAS por CATEGORIA de insumo.
+    - Params: {"categoria": str | null, "de": str | null, "ate": str | null}  // datas em YYYY-MM-DD
+    - Exemplo: "Quanto gastei em malte essa semana?" / "Gasto por categoria dos últimos 7 dias" / "Quanto saiu em barril esse mês?" / "Gastos por categoria de 01/03 a 15/03" / "Quanto foi em gelo?"
+
+20. fechar_lote
+    - Por que: um insumo acabou e o dono quer fechar o ciclo para calcular perda (quebra/vazamento) daquele lote
+    - Quando: o dono declara que acabou UM item de estoque e quer fechar o lote
+    - IMPORTANTE: NÃO confundir com relatorio_dia. Fechar_lote encerra UM item (ex: barril acabou); relatorio_dia fecha o dia operacional inteiro.
+    - forcar=true quando o dono já confirmou (ex: "sim, zera mesmo assim"). Default false.
+    - Params: {"item": str, "forcar": bool}
+    - Exemplo: "Acabou o Barril Pilsen, fecha o lote" / "Fechar lote do Barril IPA" / "Zera o lote do Gelo" / "Encerrar o lote do Malte Pilsen"
+
+21. desconhecido
     - Quando nenhuma outra intent se aplica
     - Params: {"mensagem": str}
 
@@ -186,6 +252,28 @@ def _normalizar_nomes(action: dict) -> None:
     elif intent == "remover_entrada":
         if params.get("produto"):
             params["produto"] = _title(params["produto"])
+
+    elif intent in ("definir_estoque", "atualizar_estoque"):
+        if params.get("nome"):
+            params["nome"] = _title(params["nome"])
+
+    elif intent == "consultar_estoque":
+        if params.get("nome"):
+            params["nome"] = _title(params["nome"])
+
+    elif intent == "mapear_produto":
+        if params.get("produto"):
+            params["produto"] = _title(params["produto"])
+        if params.get("item_estoque"):
+            params["item_estoque"] = _title(params["item_estoque"])
+
+    elif intent == "remover_mapeamento":
+        if params.get("produto"):
+            params["produto"] = _title(params["produto"])
+
+    elif intent == "fechar_lote":
+        if params.get("item"):
+            params["item"] = _title(params["item"])
 
 
 def _title(nome: str) -> str:
