@@ -23,6 +23,7 @@ from app.database import (
     init_db, close_db,
     buscar_entradas_dashboard, buscar_saidas_dashboard,
     buscar_estoque_resumo, buscar_fluxo_caixa,
+    listar_estoque,
 )
 from app.dashboard import DASHBOARD_HTML
 import httpx
@@ -99,6 +100,23 @@ async def api_saidas(de: str | None = None, ate: str | None = None):
 
 @app.get("/api/estoque")
 async def api_estoque():
+    rows = await listar_estoque()
+    return JSONResponse([
+        {
+            "id": str(r["id"]),
+            "nome": r["nome"],
+            "unidade": r["unidade"],
+            "qtd": float(r["qtd"]),
+            "custo_unitario": float(r["custo_unitario"]),
+            "categoria": r["categoria"],
+            "valor": float(r["valor"]),
+        }
+        for r in rows
+    ])
+
+
+@app.get("/api/estoque_legado")
+async def api_estoque_legado():
     rows = await buscar_estoque_resumo()
     return JSONResponse(rows)
 
@@ -198,6 +216,14 @@ async def _process_text(text: str, transcription_prefix: str = "") -> None:
         "não", "nao", "no", "n", "cancela", "cancelar",
     ):
         action = {"intent": "desconhecido", "params": {"mensagem": text.strip()}}
+    # Intercepta confirmação de fechamento de lote (sim/não) sem chamar o NLU
+    elif router.has_pending_fechamento_lote() and text.strip().lower() in (
+        "sim", "s", "pode", "ok", "isso",
+        "não", "nao", "no", "n", "cancela", "cancelar",
+    ):
+        reply = await router.resolver_fechamento_lote_pendente(text)
+        await send_text(f"{transcription_prefix}{reply}" if transcription_prefix else reply)
+        return
     else:
         action = await nlu.extract_action(text)
 

@@ -1025,6 +1025,16 @@ async def mapear_produto(
     }
 
 
+async def produto_ja_existiu_cardapio(nome: str) -> bool:
+    """True se o produto apareceu em produtos_dia em qualquer data (case-insensitive)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM produtos_dia WHERE lower(nome) = lower($1))",
+            nome,
+        )
+
+
 async def listar_mapeamentos() -> list[dict]:
     """Lista todos os mapeamentos com nome do item resolvido, ordenados por produto."""
     pool = get_pool()

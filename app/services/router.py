@@ -4,6 +4,7 @@ Retorna uma string formatada para ser enviada ao dono via WhatsApp.
 """
 
 import logging
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -14,9 +15,16 @@ logger = logging.getLogger(__name__)
 # Pagamento pendente de confirmação (um por vez, dono opera sozinho)
 _pagamento_pendente: dict | None = None
 
+# Fechamento de lote pendente de confirmação (mesmo padrão)
+_fechamento_lote_pendente: dict | None = None
+
 
 def has_pending_payment() -> bool:
     return _pagamento_pendente is not None
+
+
+def has_pending_fechamento_lote() -> bool:
+    return _fechamento_lote_pendente is not None
 
 
 def _safe_int(value, default: int = 1) -> int:
@@ -34,10 +42,14 @@ def _safe_float(value, default: float | None = None) -> float | None:
 
 
 async def dispatch(action: dict) -> str:
-    global _pagamento_pendente
+    global _pagamento_pendente, _fechamento_lote_pendente
 
     intent = action.get("intent", "desconhecido")
     params = action.get("params", {})
+
+    # Se havia fechamento de lote pendente mas chegou outra coisa, cancela silenciosamente
+    if _fechamento_lote_pendente is not None:
+        _fechamento_lote_pendente = None
 
     # Verifica se há pagamento pendente de confirmação
     if _pagamento_pendente is not None:
@@ -70,6 +82,14 @@ async def dispatch(action: dict) -> str:
         "registrar_entrada": _registrar_entrada,
         "remover_entrada": _remover_entrada,
         "remover_cardapio": _remover_cardapio,
+        "definir_estoque": _definir_estoque,
+        "consultar_estoque": _consultar_estoque,
+        "atualizar_estoque": _atualizar_estoque,
+        "mapear_produto": _mapear_produto,
+        "listar_mapeamentos": _listar_mapeamentos,
+        "remover_mapeamento": _remover_mapeamento,
+        "gasto_categoria": _gasto_categoria,
+        "fechar_lote": _fechar_lote,
         "desconhecido": _desconhecido,
     }
 
@@ -314,18 +334,56 @@ async def _executar_pagamento(dados: dict) -> str:
         )
 
 
+def _bloco_baixa_estoque(baixa: dict) -> str:
+    """Formata o bloco 📦 Baixa de estoque a partir do retorno de consolidar_baixa_estoque."""
+    if baixa.get("ja_fechado"):
+        snap = baixa.get("snapshot") or {}
+        fechado_em = snap.get("fechado_em")
+        quando = fechado_em.strftime("%H:%M") if fechado_em else "?"
+        sem_mapa = snap.get("produtos_sem_mapa") or []
+        partes = [f"ℹ️ Estoque já foi baixado às {quando}."]
+        if sem_mapa:
+            partes.append(f"Sem mapeamento: {', '.join(sem_mapa)}")
+        return "📦 *Baixa de estoque*\n" + "\n".join(partes)
+
+    baixados = baixa.get("produtos_baixados") or []
+    sem_mapa = baixa.get("produtos_sem_mapa") or []
+    avisos = baixa.get("avisos_negativos") or []
+
+    if not baixados and not sem_mapa:
+        return ""  # nada a baixar (sem mapeamentos ou sem vendas)
+
+    partes = [f"✅ {len(baixados)} produto(s) baixado(s)."] if baixados else []
+    if sem_mapa:
+        partes.append("⚠️ Sem mapeamento: " + ", ".join(sem_mapa))
+    for a in avisos:
+        partes.append(
+            f"⚠️ *{a['item_nome']}* ficou em {_fmt_qtd(a['qtd'], a['unidade'])}"
+        )
+    return "📦 *Baixa de estoque*\n" + "\n".join(partes)
+
+
 async def _relatorio_dia(params: dict) -> str:
     dados = await db.relatorio_dia()
 
+    bloco_baixa = ""
+    try:
+        baixa = await db.consolidar_baixa_estoque(db._hoje())
+        bloco_baixa = _bloco_baixa_estoque(baixa)
+    except Exception as exc:
+        logger.exception("Erro em consolidar_baixa_estoque: %s", exc)
+        bloco_baixa = "⚠️ Erro ao baixar estoque. Relatório parcial."
+
     por_produto = dados["por_produto"]
     if not por_produto:
-        return "ℹ️ Nenhuma venda registrada hoje."
+        base = "ℹ️ Nenhuma venda registrada hoje."
+        return base + ("\n\n" + bloco_baixa if bloco_baixa else "")
 
     linhas = "\n".join(
         f"• {p['produto_nome']}: {p['quantidade_total']}x — R$ {p['receita']:.2f}"
         for p in por_produto
     )
-    return (
+    base = (
         f"📊 *Relatório do dia*\n"
         f"{linhas}\n"
         f"─────────────\n"
@@ -334,6 +392,9 @@ async def _relatorio_dia(params: dict) -> str:
         f"Recebido: R$ {dados['total_recebido']:.2f}\n"
         f"*Pendente: R$ {dados['total_pendente']:.2f}*"
     )
+    if bloco_baixa:
+        base += "\n\n" + bloco_baixa
+    return base
 
 
 async def _renomear_cliente(params: dict) -> str:
@@ -392,6 +453,331 @@ async def _remover_entrada(params: dict) -> str:
 
     desc = f"{removido['quantidade']:g}x {removido['unidade']} de *{removido['produto_nome']}*"
     return f"✅ Entrada removida: {desc} — R$ {removido['valor_total']:.2f}"
+
+
+def _fmt_qtd(qtd, unidade: str) -> str:
+    """Formata quantidade preservando precisão razoável (12.3 → '12.3', 12 → '12')."""
+    q = Decimal(qtd)
+    if q == q.to_integral_value():
+        return f"{int(q)} {unidade}"
+    return f"{q.normalize():f} {unidade}"
+
+
+async def _definir_estoque(params: dict) -> str:
+    nome = (params.get("nome") or "").strip()
+    unidade = (params.get("unidade") or "").strip()
+    categoria = (params.get("categoria") or "").strip().lower()
+    qtd_inicial = _safe_float(params.get("qtd_inicial"), default=0.0) or 0.0
+    custo_unitario = _safe_float(params.get("custo_unitario"), default=0.0) or 0.0
+
+    if not nome:
+        return "❌ Informe o nome do item."
+    if unidade not in db._UNIDADES_ESTOQUE:
+        return "❌ Unidade inválida. Use: L, ml, kg, g, un."
+    if not categoria:
+        cats = ", ".join(db._CATEGORIAS_ESTOQUE)
+        return f"❌ Informe a categoria. Use: {cats}."
+    if categoria not in db._CATEGORIAS_ESTOQUE:
+        cats = ", ".join(db._CATEGORIAS_ESTOQUE)
+        return f"❌ Categoria inválida. Use: {cats}."
+    if qtd_inicial < 0 or custo_unitario < 0:
+        return "❌ Quantidade e custo não podem ser negativos."
+
+    item = await db.criar_item_estoque(
+        nome, unidade, Decimal(str(qtd_inicial)), Decimal(str(custo_unitario)), categoria,
+    )
+    if item is None:
+        return f"⚠️ *{nome}* já está cadastrado no estoque."
+
+    qtd_str = _fmt_qtd(item["qtd"], item["unidade"])
+    return (
+        f"✅ *{item['nome']}* cadastrado no estoque.\n"
+        f"Categoria: {item['categoria']} · Qtd: {qtd_str} · Custo: R$ {item['custo_unitario']:.2f}"
+    )
+
+
+async def _consultar_estoque(params: dict) -> str:
+    nome = (params.get("nome") or "").strip()
+
+    if nome:
+        item = await db.buscar_item_estoque(nome)
+        if item is None:
+            return f"⚠️ *{nome}* não está no estoque."
+        qtd = Decimal(item["qtd"])
+        valor = qtd * Decimal(item["custo_unitario"])
+        alerta = " ⚠️" if qtd < 0 else ""
+        return (
+            f"📦 *{item['nome']}*{alerta}\n"
+            f"Categoria: {item['categoria']}\n"
+            f"Qtd: {_fmt_qtd(qtd, item['unidade'])}\n"
+            f"Custo: R$ {item['custo_unitario']:.2f} · Valor: R$ {valor:.2f}"
+        )
+
+    itens = await db.listar_estoque()
+    if not itens:
+        return "ℹ️ Estoque vazio. Cadastre itens com _definir estoque_."
+
+    por_cat: dict[str, list[dict]] = {}
+    for it in itens:
+        por_cat.setdefault(it["categoria"], []).append(it)
+
+    linhas: list[str] = []
+    for cat, grupo in por_cat.items():
+        linhas.append(f"*{cat.capitalize()}*")
+        for it in grupo:
+            qtd = Decimal(it["qtd"])
+            alerta = " ⚠️" if qtd < 0 else ""
+            linhas.append(f"• {it['nome']} — {_fmt_qtd(qtd, it['unidade'])}{alerta}")
+
+    capital = await db.capital_congelado()
+    return (
+        f"📦 *Estoque ({len(itens)} itens):*\n"
+        + "\n".join(linhas)
+        + f"\n─────────────\n💰 Capital congelado: R$ {capital:.2f}"
+    )
+
+
+async def _atualizar_estoque(params: dict) -> str:
+    nome = (params.get("nome") or "").strip()
+    nova_qtd_raw = params.get("nova_qtd")
+    nova_categoria = (params.get("nova_categoria") or "").strip().lower() or None
+    novo_custo_raw = params.get("novo_custo")
+
+    if not nome:
+        return "❌ Informe o nome do item."
+
+    nova_qtd = _safe_float(nova_qtd_raw) if nova_qtd_raw is not None else None
+    novo_custo = _safe_float(novo_custo_raw) if novo_custo_raw is not None else None
+
+    if nova_qtd is None and nova_categoria is None and novo_custo is None:
+        return "❌ Informe o que atualizar: qtd, categoria ou custo."
+
+    if nova_categoria is not None and nova_categoria not in db._CATEGORIAS_ESTOQUE:
+        cats = ", ".join(db._CATEGORIAS_ESTOQUE)
+        return f"❌ Categoria inválida. Use: {cats}."
+
+    if novo_custo is not None and novo_custo < 0:
+        return "❌ Custo não pode ser negativo."
+
+    resultado = await db.atualizar_estoque(
+        nome,
+        nova_qtd=Decimal(str(nova_qtd)) if nova_qtd is not None else None,
+        nova_categoria=nova_categoria,
+        novo_custo=Decimal(str(novo_custo)) if novo_custo is not None else None,
+    )
+    if resultado is None:
+        return f"⚠️ *{nome}* não está no estoque. Cadastre primeiro com _definir estoque_."
+
+    anterior = resultado["anterior"]
+    novo = resultado["novo"]
+    delta = resultado["delta_qtd"]
+
+    mudancas: list[str] = []
+    if nova_qtd is not None:
+        sinal = "+" if delta >= 0 else ""
+        mudancas.append(
+            f"qtd {_fmt_qtd(anterior['qtd'], novo['unidade'])} → "
+            f"{_fmt_qtd(novo['qtd'], novo['unidade'])} "
+            f"(ajuste {sinal}{_fmt_qtd(delta, novo['unidade'])} no lote)"
+        )
+    if nova_categoria is not None:
+        mudancas.append(f"categoria {anterior['categoria']} → {novo['categoria']}")
+    if novo_custo is not None:
+        mudancas.append(
+            f"custo R$ {Decimal(anterior['custo_unitario']):.2f} → R$ {Decimal(novo['custo_unitario']):.2f}"
+        )
+
+    alerta = ""
+    if Decimal(novo["qtd"]) < 0:
+        alerta = "\n⚠️ Qtd ficou negativa — confira o registro."
+
+    return f"✅ *{novo['nome']}*: " + "; ".join(mudancas) + "." + alerta
+
+
+async def _mapear_produto(params: dict) -> str:
+    produto = (params.get("produto") or "").strip()
+    item_estoque = (params.get("item_estoque") or "").strip()
+    consumo = _safe_float(params.get("consumo"))
+
+    if not produto or not item_estoque:
+        return "❌ Informe o produto e o item de estoque."
+    if consumo is None or consumo <= 0:
+        return "❌ Informe o consumo por unidade (maior que zero)."
+
+    existe_cardapio = await db.produto_ja_existiu_cardapio(produto)
+    if not existe_cardapio:
+        return (
+            f"⚠️ Produto *{produto}* não existe no cardápio. "
+            f"Defina primeiro com _hoje tem {produto} a ..._."
+        )
+
+    item = await db.buscar_item_estoque(item_estoque)
+    if item is None:
+        return (
+            f"⚠️ Item *{item_estoque}* não está no estoque. "
+            f"Cadastre primeiro com _definir estoque_."
+        )
+
+    resultado = await db.mapear_produto(produto, item_estoque, Decimal(str(consumo)))
+    if resultado is None:
+        return f"⚠️ Item *{item_estoque}* não está no estoque."
+
+    return (
+        f"✅ *{resultado['produto_nome']}* → "
+        f"{_fmt_qtd(resultado['consumo_por_unidade'], resultado['unidade'])} "
+        f"de *{resultado['item_nome']}* por unidade vendida."
+    )
+
+
+async def _listar_mapeamentos(params: dict) -> str:
+    mapeamentos = await db.listar_mapeamentos()
+    if not mapeamentos:
+        return "ℹ️ Nenhum mapeamento cadastrado."
+
+    linhas = "\n".join(
+        f"• *{m['produto_nome']}* → {_fmt_qtd(m['consumo_por_unidade'], m['unidade'])} de *{m['item_nome']}*"
+        for m in mapeamentos
+    )
+    return f"🔗 *Mapeamentos ({len(mapeamentos)}):*\n{linhas}"
+
+
+async def _remover_mapeamento(params: dict) -> str:
+    produto = (params.get("produto") or "").strip()
+    if not produto:
+        return "❌ Informe o produto."
+
+    removido = await db.remover_mapeamento(produto)
+    if not removido:
+        return f"⚠️ Mapeamento de *{produto}* não encontrado."
+    return f"✅ Mapeamento de *{produto}* removido."
+
+
+def _parse_data(valor) -> date | None:
+    if not valor:
+        return None
+    try:
+        return date.fromisoformat(str(valor).strip())
+    except ValueError:
+        return None
+
+
+async def _gasto_categoria(params: dict) -> str:
+    de = _parse_data(params.get("de"))
+    ate = _parse_data(params.get("ate"))
+    filtro_categoria = (params.get("categoria") or "").strip().lower() or None
+
+    hoje = db._hoje()
+    if de is None and ate is None:
+        ate = hoje
+        de = hoje - timedelta(days=6)
+        rotulo = "últimos 7 dias"
+    else:
+        if de is None:
+            de = hoje - timedelta(days=6)
+        if ate is None:
+            ate = hoje
+        if de > ate:
+            de, ate = ate, de
+        rotulo = f"{de.strftime('%d/%m')} a {ate.strftime('%d/%m')}"
+
+    dados = await db.gasto_por_categoria(de, ate)
+
+    if filtro_categoria:
+        dados = [d for d in dados if d["categoria"].lower() == filtro_categoria]
+
+    if not dados:
+        return f"ℹ️ Nenhuma entrada registrada em *{rotulo}*."
+
+    dados_ordenados = [d for d in dados if d["categoria"] != "sem categoria"]
+    sem_cat = [d for d in dados if d["categoria"] == "sem categoria"]
+
+    total_geral = sum((Decimal(d["total"]) for d in dados), Decimal(0))
+
+    linhas = [
+        f"• {d['categoria'].capitalize()}: R$ {Decimal(d['total']):.2f} ({d['qtd_entradas']}x)"
+        for d in dados_ordenados
+    ]
+    for d in sem_cat:
+        linhas.append(
+            f"• _Sem categoria_: R$ {Decimal(d['total']):.2f} ({d['qtd_entradas']}x)"
+        )
+
+    return (
+        f"📊 *Gasto por categoria ({rotulo}):*\n"
+        + "\n".join(linhas)
+        + f"\n─────────────\nTotal: R$ {total_geral:.2f}"
+    )
+
+
+def _formatar_fechamento_lote(r: dict) -> str:
+    """Formata a resposta de um lote efetivamente fechado."""
+    unidade = r["unidade"]
+    linhas = [
+        f"✅ Lote de *{r['item_nome']}* fechado.",
+        f"Comprado: {_fmt_qtd(r['qtd_comprada'], unidade)}",
+        f"Vendido: {_fmt_qtd(r['qtd_vendida'], unidade)}",
+    ]
+    if Decimal(r["qtd_ajustes"]) != 0:
+        linhas.append(f"Ajustes: {_fmt_qtd(r['qtd_ajustes'], unidade)}")
+    linhas.append(f"Restante: {_fmt_qtd(r['qtd_restante'], unidade)}")
+
+    if r["sem_vendas"]:
+        linhas.append(f"Perda: {_fmt_qtd(r['perda'], unidade)} _(sem vendas — % não calculável)_")
+    else:
+        pct = Decimal(r["perda_pct"]) if r["perda_pct"] is not None else None
+        pct_str = f" ({pct:.1f}%)" if pct is not None else ""
+        linhas.append(f"Perda: {_fmt_qtd(r['perda'], unidade)}{pct_str}")
+
+    return "\n".join(linhas)
+
+
+async def _fechar_lote(params: dict) -> str:
+    global _fechamento_lote_pendente
+
+    item = (params.get("item") or "").strip()
+    forcar = bool(params.get("forcar"))
+
+    if not item:
+        return "❌ Informe o item cujo lote quer fechar."
+
+    resultado = await db.fechar_lote(item, forcar=forcar)
+    if resultado is None:
+        return f"⚠️ *{item}* não está no estoque."
+
+    if resultado.get("nenhum_lote_aberto"):
+        return f"ℹ️ *{resultado['item_nome']}* não tem lote aberto."
+
+    if resultado.get("confirmar"):
+        _fechamento_lote_pendente = {"item_nome": resultado["item_nome"]}
+        unidade = resultado["unidade"]
+        qtd_atual = resultado["qtd_atual"]
+        return (
+            f"⚠️ Ainda há {_fmt_qtd(qtd_atual, unidade)} cadastrados em "
+            f"*{resultado['item_nome']}*. Zerar mesmo assim? (sim/não)"
+        )
+
+    return _formatar_fechamento_lote(resultado)
+
+
+async def resolver_fechamento_lote_pendente(text: str) -> str:
+    """Chamado por main.py quando há pendência e a mensagem é sim/não."""
+    global _fechamento_lote_pendente
+    pendente = _fechamento_lote_pendente
+    _fechamento_lote_pendente = None
+
+    if pendente is None:
+        return ""
+
+    resposta = (text or "").strip().lower()
+    if resposta in ("não", "nao", "no", "n", "cancela", "cancelar"):
+        return f"❌ Fechamento de *{pendente['item_nome']}* cancelado."
+
+    resultado = await db.fechar_lote(pendente["item_nome"], forcar=True)
+    if resultado is None:
+        return f"⚠️ *{pendente['item_nome']}* não está mais no estoque."
+    if resultado.get("nenhum_lote_aberto"):
+        return f"ℹ️ *{resultado['item_nome']}* não tem lote aberto."
+    return _formatar_fechamento_lote(resultado)
 
 
 async def _desconhecido(params: dict) -> str:
