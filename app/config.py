@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Dono
     OWNER_PHONE: str  # Ex: "5511999998888"
+    OWNER_LID: str  # @lid do self-chat (ex: "211063299682415@lid"). Ver /api/sessions/default ou logs.
 
     # WAHA
     WAHA_API_KEY: str

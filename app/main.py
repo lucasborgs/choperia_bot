@@ -150,8 +150,10 @@ async def webhook(request: Request):
     if not payload.get("fromMe", False) or payload.get("source") != "app":
         return {"status": "ignored"}
 
+    # WhatsApp agora usa @lid também para contatos comuns (feature de privacidade).
+    # Por isso comparamos com o @lid específico do self-chat, não qualquer @lid.
     to = payload.get("to", "")
-    if not to.endswith("@lid"):
+    if to != settings.OWNER_LID:
         return {"status": "ignored"}
 
     # WAHA coloca o type em _data.type, não no topo do payload
