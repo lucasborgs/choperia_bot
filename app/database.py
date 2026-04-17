@@ -1286,6 +1286,144 @@ async def gasto_por_categoria(de: date, ate: date) -> list[dict]:
 
 
 # ------------------------------------------------------------------
+# insights e alertas
+# ------------------------------------------------------------------
+
+
+async def receita_intervalo(de: date, ate: date, categoria: str | None = None) -> Decimal:
+    async with _pool.acquire() as conn:
+        if categoria is None:
+            result = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(valor), 0)
+                FROM pagamentos
+                WHERE criado_em::date BETWEEN $1 AND $2
+                """,
+                de, ate,
+            )
+        else:
+            result = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(i.valor_total), 0)
+                FROM itens_comanda i
+                JOIN comandas c ON c.id = i.comanda_id
+                JOIN categoria_produto cp ON lower(cp.produto_nome) = lower(i.produto_nome)
+                WHERE lower(cp.categoria) = lower($3)
+                  AND c.data_criacao::date BETWEEN $1 AND $2
+                """,
+                de, ate, categoria,
+            )
+    return Decimal(str(result)) if result else Decimal(0)
+
+
+async def comandas_abertas_ha_mais_que(horas: int) -> list[dict]:
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT nome_cliente, data_criacao, saldo_devedor
+            FROM v_saldo_comandas
+            WHERE status = 'aberta'
+              AND data_criacao <= NOW() - make_interval(hours => $1)
+            ORDER BY data_criacao ASC
+            """,
+            horas,
+        )
+    return [dict(r) for r in rows]
+
+
+async def upsert_meta(categoria: str, mes_referencia: date, valor: Decimal) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO metas_mensais (categoria, mes_referencia, valor_mensal)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (categoria, mes_referencia)
+            DO UPDATE SET valor_mensal = EXCLUDED.valor_mensal, atualizada_em = NOW()
+            """,
+            categoria, mes_referencia, valor,
+        )
+
+
+async def remover_meta(categoria: str, mes_referencia: date) -> bool:
+    async with _pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM metas_mensais WHERE categoria = $1 AND mes_referencia = $2",
+            categoria, mes_referencia,
+        )
+    return result != "DELETE 0"
+
+
+async def listar_metas_mes(mes_referencia: date) -> list[dict]:
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT categoria, valor_mensal
+            FROM metas_mensais
+            WHERE mes_referencia = $1
+            ORDER BY valor_mensal DESC
+            """,
+            mes_referencia,
+        )
+    return [dict(r) for r in rows]
+
+
+async def count_produtos_na_categoria(categoria: str) -> int:
+    async with _pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM categoria_produto WHERE categoria = $1",
+            categoria,
+        )
+
+
+async def set_categoria_produto(produto_nome: str, categoria: str) -> None:
+    if not await produto_ja_existiu_cardapio(produto_nome):
+        raise ValueError(f"{produto_nome} não existe em nenhum cardápio")
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO categoria_produto (produto_nome, categoria)
+            VALUES ($1, $2)
+            ON CONFLICT (lower(produto_nome))
+            DO UPDATE SET categoria = EXCLUDED.categoria, atualizada_em = NOW()
+            """,
+            produto_nome, categoria,
+        )
+
+
+async def progresso_metas(mes_referencia: date) -> list[dict]:
+    if mes_referencia.month < 12:
+        ultimo_dia = mes_referencia.replace(month=mes_referencia.month % 12 + 1, day=1) - timedelta(days=1)
+    else:
+        ultimo_dia = mes_referencia.replace(year=mes_referencia.year + 1, month=1, day=1) - timedelta(days=1)
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                m.categoria,
+                m.valor_mensal,
+                COALESCE(SUM(i.valor_total), 0) AS receita_mes_ate_hoje
+            FROM metas_mensais m
+            LEFT JOIN categoria_produto cp ON cp.categoria = m.categoria
+            LEFT JOIN itens_comanda i ON lower(i.produto_nome) = lower(cp.produto_nome)
+            LEFT JOIN comandas c ON c.id = i.comanda_id
+                AND c.data_criacao::date BETWEEN $2 AND $3
+            WHERE m.mes_referencia = $1
+            GROUP BY m.categoria, m.valor_mensal
+            ORDER BY m.valor_mensal DESC
+            """,
+            mes_referencia, mes_referencia, ultimo_dia,
+        )
+    return [
+        {
+            "categoria": r["categoria"],
+            "valor_mensal": Decimal(str(r["valor_mensal"])),
+            "receita_mes_ate_hoje": Decimal(str(r["receita_mes_ate_hoje"])),
+        }
+        for r in rows
+    ]
+
+
+# ------------------------------------------------------------------
 # Dashboard
 # ------------------------------------------------------------------
 
