@@ -20,7 +20,6 @@ Intents suportadas:
   - fechar_lote        params: item, forcar
   - desconhecido       params: mensagem (texto original)
   - comparar_semana      params: categoria (opcional)
-  - comandas_antigas     (sem params)
   - definir_meta         params: categoria, valor
   - remover_meta         params: categoria
   - listar_metas         (sem params)
@@ -212,14 +211,7 @@ Intents disponíveis:
    - Params: {"categoria": str | null}  // null quando sem filtro de categoria
    - Exemplo: "como foi essa semana", "comparar semana", "essa semana vs passada", "como foi a semana em chopp", "semana passada vs essa em petisco"
 
-23. comandas_antigas
-   - Por que: o dono quer identificar comandas esquecidas abertas há muito tempo para não perder receita
-   - Quando: o dono pede lista de comandas abertas há bastante tempo (qualificador: "antigas", "esquecidas", "faz tempo")
-   - IMPORTANTE: NÃO confundir com listar_comandas (que lista todas abertas sem filtro de tempo). O qualificador "antigas/esquecidas/faz tempo" é obrigatório para usar esta intent. Sem qualificador → listar_comandas.
-   - Params: {}
-   - Exemplo: "comandas antigas", "comandas esquecidas", "comandas abertas faz tempo", "tem comanda esquecida?", "quais comandas ficaram abertas"
-
-24. definir_meta
+23. definir_meta
    - Por que: o dono quer estabelecer uma meta mensal de receita por categoria de produto para acompanhar o progresso
    - Quando: o dono define ou atualiza uma meta mensal para uma categoria
    - IMPORTANTE: NÃO confundir com gasto_categoria (que consulta o PASSADO). Definir_meta estabelece um ALVO para o futuro. "Quanto gastei" = gasto_categoria. "Meta de X é Y" = definir_meta.

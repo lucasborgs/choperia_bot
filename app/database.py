@@ -1316,20 +1316,6 @@ async def receita_intervalo(de: date, ate: date, categoria: str | None = None) -
     return Decimal(str(result)) if result else Decimal(0)
 
 
-async def comandas_abertas_ha_mais_que(horas: int) -> list[dict]:
-    async with _pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT nome_cliente, data_criacao, saldo_devedor
-            FROM v_saldo_comandas
-            WHERE status = 'aberta'
-              AND data_criacao <= NOW() - make_interval(hours => $1)
-            ORDER BY data_criacao ASC
-            """,
-            horas,
-        )
-    return [dict(r) for r in rows]
-
 
 async def upsert_meta(categoria: str, mes_referencia: date, valor: Decimal) -> None:
     async with _pool.acquire() as conn:

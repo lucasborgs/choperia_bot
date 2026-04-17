@@ -98,7 +98,6 @@ async def dispatch(action: dict) -> str:
         "gasto_categoria": _gasto_categoria,
         "fechar_lote": _fechar_lote,
         "comparar_semana": _comparar_semana,
-        "comandas_antigas": _comandas_antigas,
         "definir_meta": _definir_meta,
         "remover_meta": _remover_meta,
         "listar_metas": _listar_metas,
@@ -840,42 +839,6 @@ async def _comparar_semana(params: dict) -> str:
         f"Variação: {emoji} *{sinal}{float(pct):.1f}%* (R$ {sinal}{float(delta):.2f})"
     )
 
-
-async def _comandas_antigas(params: dict) -> str:
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    _BRT = ZoneInfo("America/Sao_Paulo")
-    agora = datetime.now(_BRT)
-
-    rows = await db.comandas_abertas_ha_mais_que(4)
-    if not rows:
-        return "✅ Nenhuma comanda aberta há mais de 4h."
-
-    linhas = []
-    for r in rows:
-        abertura = r["data_criacao"]
-        diff = agora - abertura
-        total_min = int(diff.total_seconds() // 60)
-        horas = total_min // 60
-        minutos = total_min % 60
-        saldo = Decimal(r["saldo_devedor"])
-        linhas.append(
-            f"• _{r['nome_cliente']}_ • aberta há {horas}h{minutos:02d}m • saldo devedor R$ {saldo:.2f}"
-        )
-
-    header = f"🧾 *{len(rows)} comanda{'s' if len(rows) > 1 else ''} antiga{'s' if len(rows) > 1 else ''}:*\n"
-    corpo = "\n".join(linhas)
-    texto = header + corpo
-
-    # Truncar se muito longo (limite WhatsApp ~4096 chars)
-    if len(texto) > 3900:
-        linhas_curtas = linhas[:10]
-        resto = len(linhas) - 10
-        corpo = "\n".join(linhas_curtas) + f"\n_(mais {resto} não mostrados)_"
-        texto = header + corpo
-
-    return texto
 
 
 async def _definir_meta(params: dict) -> str:
