@@ -3,6 +3,7 @@ Router: recebe uma Action do NLU e executa a lógica de negócio correspondente.
 Retorna uma string formatada para ser enviada ao dono via WhatsApp.
 """
 
+import calendar
 import logging
 from datetime import date, timedelta
 from decimal import Decimal
@@ -17,6 +18,12 @@ _pagamento_pendente: dict | None = None
 
 # Fechamento de lote pendente de confirmação (mesmo padrão)
 _fechamento_lote_pendente: dict | None = None
+
+_MESES_PT = {
+    1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+    5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+    9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
+}
 
 
 def has_pending_payment() -> bool:
@@ -90,6 +97,13 @@ async def dispatch(action: dict) -> str:
         "remover_mapeamento": _remover_mapeamento,
         "gasto_categoria": _gasto_categoria,
         "fechar_lote": _fechar_lote,
+        "comparar_semana": _comparar_semana,
+        "comandas_antigas": _comandas_antigas,
+        "definir_meta": _definir_meta,
+        "remover_meta": _remover_meta,
+        "listar_metas": _listar_metas,
+        "categorizar_produto": _categorizar_produto,
+        "progresso_metas": _progresso_metas,
         "desconhecido": _desconhecido,
     }
 
@@ -778,6 +792,208 @@ async def resolver_fechamento_lote_pendente(text: str) -> str:
     if resultado.get("nenhum_lote_aberto"):
         return f"ℹ️ *{resultado['item_nome']}* não tem lote aberto."
     return _formatar_fechamento_lote(resultado)
+
+
+def _normalizar_categoria(valor: str) -> str:
+    """Normaliza categoria: lowercase + remove acentos (NFKD)."""
+    import unicodedata
+    s = (valor or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in s if not unicodedata.combining(c))
+
+
+async def _comparar_semana(params: dict) -> str:
+    categoria_raw = (params.get("categoria") or "").strip()
+    categoria = _normalizar_categoria(categoria_raw) if categoria_raw else None
+
+    hoje = db._hoje()
+    de1 = hoje - timedelta(days=6)
+    ate1 = hoje
+    de2 = hoje - timedelta(days=13)
+    ate2 = hoje - timedelta(days=7)
+
+    atual = await db.receita_intervalo(de1, ate1, categoria)
+    anterior = await db.receita_intervalo(de2, ate2, categoria)
+
+    filtro_str = f" em *{categoria}*" if categoria else ""
+
+    if atual == 0 and anterior == 0:
+        return f"ℹ️ Sem histórico suficiente para comparar{filtro_str}."
+
+    if anterior == 0:
+        return (
+            f"📊 *Últimos 7 dias{filtro_str}*\n"
+            f"_{de1.strftime('%d/%m')}_ a _{ate1.strftime('%d/%m')}_: *R$ {atual:.2f}*\n"
+            f"_{de2.strftime('%d/%m')}_ a _{ate2.strftime('%d/%m')}_: *R$ 0,00*\n"
+            f"ℹ️ Sem período anterior para calcular variação."
+        )
+
+    delta = atual - anterior
+    pct = (delta / anterior) * 100
+    emoji = "📈" if delta >= 0 else "📉"
+    sinal = "+" if delta >= 0 else ""
+
+    return (
+        f"📊 *Últimos 7 dias{filtro_str}*\n"
+        f"_{de1.strftime('%d/%m')}_ a _{ate1.strftime('%d/%m')}_: *R$ {atual:.2f}*\n"
+        f"_{de2.strftime('%d/%m')}_ a _{ate2.strftime('%d/%m')}_: *R$ {anterior:.2f}*\n"
+        f"Variação: {emoji} *{sinal}{float(pct):.1f}%* (R$ {sinal}{float(delta):.2f})"
+    )
+
+
+async def _comandas_antigas(params: dict) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    _BRT = ZoneInfo("America/Sao_Paulo")
+    agora = datetime.now(_BRT)
+
+    rows = await db.comandas_abertas_ha_mais_que(4)
+    if not rows:
+        return "✅ Nenhuma comanda aberta há mais de 4h."
+
+    linhas = []
+    for r in rows:
+        abertura = r["data_criacao"]
+        diff = agora - abertura
+        total_min = int(diff.total_seconds() // 60)
+        horas = total_min // 60
+        minutos = total_min % 60
+        saldo = Decimal(r["saldo_devedor"])
+        linhas.append(
+            f"• _{r['nome_cliente']}_ • aberta há {horas}h{minutos:02d}m • saldo devedor R$ {saldo:.2f}"
+        )
+
+    header = f"🧾 *{len(rows)} comanda{'s' if len(rows) > 1 else ''} antiga{'s' if len(rows) > 1 else ''}:*\n"
+    corpo = "\n".join(linhas)
+    texto = header + corpo
+
+    # Truncar se muito longo (limite WhatsApp ~4096 chars)
+    if len(texto) > 3900:
+        linhas_curtas = linhas[:10]
+        resto = len(linhas) - 10
+        corpo = "\n".join(linhas_curtas) + f"\n_(mais {resto} não mostrados)_"
+        texto = header + corpo
+
+    return texto
+
+
+async def _definir_meta(params: dict) -> str:
+    categoria_raw = (params.get("categoria") or "").strip()
+    valor_raw = params.get("valor")
+
+    if not categoria_raw:
+        return "❌ Informe a categoria da meta."
+
+    valor_float = _safe_float(valor_raw)
+    if valor_float is None or valor_float <= 0:
+        return "❌ Informe um valor válido para a meta (maior que zero)."
+
+    categoria = _normalizar_categoria(categoria_raw)
+    valor = Decimal(str(valor_float))
+
+    hoje = db._hoje()
+    mes = date(hoje.year, hoje.month, 1)
+
+    await db.upsert_meta(categoria, mes, valor)
+
+    tem_produtos = await db.count_produtos_na_categoria(categoria) > 0
+    if not tem_produtos:
+        return (
+            f"✅ Meta salva. Nenhum produto ainda está na categoria _{categoria}_"
+            f" — use _\"categorizar produto\"_ para associar produtos.\n"
+            f"*Meta de {categoria}* este mês: *R$ {valor:.2f}*"
+        )
+    return f"✅ *Meta de {categoria}* este mês: *R$ {valor:.2f}*"
+
+
+async def _remover_meta(params: dict) -> str:
+    categoria_raw = (params.get("categoria") or "").strip()
+    if not categoria_raw:
+        return "❌ Informe a categoria da meta a remover."
+
+    categoria = _normalizar_categoria(categoria_raw)
+    hoje = db._hoje()
+    mes = date(hoje.year, hoje.month, 1)
+
+    removida = await db.remover_meta(categoria, mes)
+    if not removida:
+        return f"ℹ️ Nenhuma meta de _{categoria}_ este mês."
+    return f"✅ Meta de _{categoria}_ removida para este mês."
+
+
+async def _listar_metas(params: dict) -> str:
+    hoje = db._hoje()
+    mes = date(hoje.year, hoje.month, 1)
+
+    metas = await db.listar_metas_mes(mes)
+    if not metas:
+        return "ℹ️ Nenhuma meta definida para este mês."
+
+    nome_mes = _MESES_PT[mes.month]
+    linhas = "\n".join(f"• _{m['categoria']}_: R$ {Decimal(m['valor_mensal']):.2f}" for m in metas)
+    return f"*Metas de {nome_mes}:*\n{linhas}"
+
+
+async def _categorizar_produto(params: dict) -> str:
+    produto = (params.get("produto") or "").strip()
+    categoria_raw = (params.get("categoria") or "").strip()
+
+    if not produto:
+        return "❌ Informe o produto a categorizar."
+    if not categoria_raw:
+        return "❌ Informe a categoria."
+
+    categoria = _normalizar_categoria(categoria_raw)
+
+    try:
+        await db.set_categoria_produto(produto, categoria)
+    except ValueError:
+        return f"⚠️ _{produto}_ não existe em nenhum cardápio. Cadastre primeiro."
+
+    return f"✅ _{produto}_ agora é categoria *{categoria}*."
+
+
+async def _progresso_metas(params: dict) -> str:
+    import datetime as _dt
+
+    hoje_cal = _dt.date.today()
+    mes = _dt.date(hoje_cal.year, hoje_cal.month, 1)
+    dias_no_mes = calendar.monthrange(hoje_cal.year, hoje_cal.month)[1]
+    dia = hoje_cal.day
+
+    linhas_meta = await db.progresso_metas(mes)
+    if not linhas_meta:
+        return 'ℹ️ Nenhuma meta definida para este mês. Use _"definir meta <categoria> <valor>"_.'
+
+    nome_mes = _MESES_PT[mes.month]
+    linhas = []
+    for m in linhas_meta:
+        meta = Decimal(str(m["valor_mensal"]))
+        receita = Decimal(str(m["receita_mes_ate_hoje"]))
+        categoria = m["categoria"]
+
+        pct = int((receita / meta * 100)) if meta > 0 else 0
+
+        if receita >= meta:
+            status_emoji = "🎉"
+            projecao_str = f"meta atingida!"
+        else:
+            projecao = (receita / dia * dias_no_mes) if dia > 0 else Decimal(0)
+            status_emoji = "✅" if projecao >= meta else "⚠️"
+            projecao_str = f"projeção R$ {float(projecao):.2f} no mês"
+
+        if receita == 0 and pct == 0:
+            sublinha = f"└─ _nenhum produto categorizado ou sem vendas_"
+        else:
+            ritmo_str = f"R$ {float(receita):.2f} em {dia} dias → {projecao_str}"
+            sublinha = f"└─ _{ritmo_str}_ {status_emoji}"
+
+        linhas.append(
+            f"🎯 *{categoria}*: R$ {float(receita):.2f} / R$ {float(meta):.2f} ({pct}%)\n{sublinha}"
+        )
+
+    return f"*Progresso das metas — {nome_mes}:*\n\n" + "\n\n".join(linhas)
 
 
 async def _desconhecido(params: dict) -> str:
