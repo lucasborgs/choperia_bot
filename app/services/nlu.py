@@ -19,6 +19,13 @@ Intents suportadas:
   - gasto_categoria    params: categoria (opcional), de/ate (opcionais)
   - fechar_lote        params: item, forcar
   - desconhecido       params: mensagem (texto original)
+  - comparar_semana      params: categoria (opcional)
+  - comandas_antigas     (sem params)
+  - definir_meta         params: categoria, valor
+  - remover_meta         params: categoria
+  - listar_metas         (sem params)
+  - categorizar_produto  params: produto, categoria
+  - progresso_metas      (sem params)
 """
 
 import json
@@ -198,6 +205,53 @@ Intents disponíveis:
     - Quando nenhuma outra intent se aplica
     - Params: {"mensagem": str}
 
+22. comparar_semana
+   - Por que: o dono quer saber se o faturamento está crescendo ou caindo comparado à semana anterior
+   - Quando: o dono pede comparação de receita da semana atual vs. a anterior (rolling 7 dias)
+   - IMPORTANTE: NÃO confundir com relatorio_dia (que é só o dia de hoje). Comparar_semana é os últimos 7 dias vs. os 7 dias anteriores.
+   - Params: {"categoria": str | null}  // null quando sem filtro de categoria
+   - Exemplo: "como foi essa semana", "comparar semana", "essa semana vs passada", "como foi a semana em chopp", "semana passada vs essa em petisco"
+
+23. comandas_antigas
+   - Por que: o dono quer identificar comandas esquecidas abertas há muito tempo para não perder receita
+   - Quando: o dono pede lista de comandas abertas há bastante tempo (qualificador: "antigas", "esquecidas", "faz tempo")
+   - IMPORTANTE: NÃO confundir com listar_comandas (que lista todas abertas sem filtro de tempo). O qualificador "antigas/esquecidas/faz tempo" é obrigatório para usar esta intent. Sem qualificador → listar_comandas.
+   - Params: {}
+   - Exemplo: "comandas antigas", "comandas esquecidas", "comandas abertas faz tempo", "tem comanda esquecida?", "quais comandas ficaram abertas"
+
+24. definir_meta
+   - Por que: o dono quer estabelecer uma meta mensal de receita por categoria de produto para acompanhar o progresso
+   - Quando: o dono define ou atualiza uma meta mensal para uma categoria
+   - IMPORTANTE: NÃO confundir com gasto_categoria (que consulta o PASSADO). Definir_meta estabelece um ALVO para o futuro. "Quanto gastei" = gasto_categoria. "Meta de X é Y" = definir_meta.
+   - Params: {"categoria": str, "valor": float}
+   - Exemplo: "definir meta chopp 10000", "meta de chopp é 10 mil", "meta mensal de petisco R$ 3000", "quero bater 5000 em chopp esse mês", "meta de refri: 1500"
+
+25. remover_meta
+   - Por que: o dono quer apagar uma meta mensal que não é mais relevante
+   - Quando: o dono quer deletar uma meta existente deste mês
+   - Params: {"categoria": str}
+   - Exemplo: "remover meta chopp", "apagar meta de petisco", "cancela a meta de refri", "tira a meta de chopp desse mês"
+
+26. listar_metas
+   - Por que: o dono quer ver todas as metas definidas para o mês
+   - Quando: o dono pede a lista de metas mensais
+   - Params: {}
+   - Exemplo: "listar metas", "quais metas desse mês", "metas do mês", "me mostra as metas", "que metas tenho?"
+
+27. categorizar_produto
+   - Por que: para o progresso de metas funcionar, cada produto do cardápio precisa ser associado a uma categoria
+   - Quando: o dono declara que um produto pertence a uma categoria
+   - IMPORTANTE: NÃO confundir com mapear_produto (que liga produto a item de ESTOQUE com consumo físico). Categorizar_produto liga produto a uma CATEGORIA de meta. "Chopp pilsen é chopp" = categorizar_produto. "Chopp 300 consome 0.3L de Barril" = mapear_produto.
+   - Params: {"produto": str, "categoria": str}
+   - Exemplo: "chopp pilsen é chopp", "categorizar chopp pilsen como chopp", "petisco: amendoim", "amendoim vai em petisco", "coloca chopp 300 na categoria chopp"
+
+28. progresso_metas
+   - Por que: o dono quer saber o quanto já faturou em cada categoria em relação à meta e se está no ritmo
+   - Quando: o dono consulta o andamento das metas mensais
+   - IMPORTANTE: não tem parâmetros. Sempre retorna todas as metas do mês corrente.
+   - Params: {}
+   - Exemplo: "como está a meta", "progresso das metas", "meta do mês", "estou batendo a meta?", "como tá o progresso?", "quanto falta pra meta?"
+
 Retorne APENAS JSON no formato:
 {"intent": "<nome>", "params": {...}}"""
 
@@ -268,6 +322,10 @@ def _normalizar_nomes(action: dict) -> None:
             params["item_estoque"] = _title(params["item_estoque"])
 
     elif intent == "remover_mapeamento":
+        if params.get("produto"):
+            params["produto"] = _title(params["produto"])
+
+    elif intent == "categorizar_produto":
         if params.get("produto"):
             params["produto"] = _title(params["produto"])
 
